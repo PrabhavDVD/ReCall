@@ -1,0 +1,56 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.recall'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // LWJGL (OpenGL bindings) - 3.3.4 has better Java 21+ support
+    implementation 'org.lwjgl:lwjgl:3.3.4'
+    implementation 'org.lwjgl:lwjgl-glfw:3.3.4'
+    implementation 'org.lwjgl:lwjgl-opengl:3.3.4'
+
+    // LWJGL natives (platform-specific)
+    runtimeOnly 'org.lwjgl:lwjgl:3.3.4:natives-windows'
+    runtimeOnly 'org.lwjgl:lwjgl-glfw:3.3.4:natives-windows'
+    runtimeOnly 'org.lwjgl:lwjgl-opengl:3.3.4:natives-windows'
+
+    // JOML (Math library)
+    implementation 'org.joml:joml:1.10.4'
+
+    // JSON (config files)
+    implementation 'com.google.code.gson:gson:2.10.1'
+
+    // Logging
+    implementation 'org.slf4j:slf4j-api:2.0.5'
+    implementation 'org.slf4j:slf4j-simple:2.0.5'
+}
+
+java {
+    sourceCompatibility = '17'
+    targetCompatibility = '17'
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src']
+        }
+    }
+}
+
+application {
+    mainClass = 'com.recall.Main'
+}
+
+tasks.run {
+    standardInput = System.in
+    // Suppress Java 24 native access warnings from LWJGL internals
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}

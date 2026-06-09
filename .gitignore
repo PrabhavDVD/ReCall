@@ -1,0 +1,48 @@
+﻿# ── Gradle ──────────────────────────────
+build/
+.gradle/
+*.jar
+*.zip
+
+# ── IDE ─────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ── Java ─────────────────────────────────
+*.class
+*.o
+*.so
+*.dll
+
+# ── OS ───────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
+
+# ── Build artifacts ──────────────────────
+bin/
+dist/
+target/
+
+# ── Local environment ────────────────────
+.env
+.env.local
+*.local
+
+# ── Misc ─────────────────────────────────
+*.swp
+*.swo
+*~
+.classpath
+.project
+.settings/
+
+# ── Project-specific: not for repo ───────
+docs/
+.claude/
+README.md
+*.txt
