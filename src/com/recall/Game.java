@@ -8,11 +8,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.recall.GameState;
+import com.recall.GameTeam;
 import com.recall.physics.Bullet;
 
-import com.recall.entity.Box;
 import com.recall.entity.Dummy;
-import com.recall.entity.Enemy;
 import com.recall.entity.Entity;
 import com.recall.entity.Obstacle;
 import com.recall.entity.Player;
@@ -86,16 +85,87 @@ public class Game {
     private WorldHealthBar worldHealthBar;
     private Mesh impactMarkerMesh;  // small dark cube for bullet hole visuals
 
-    /** AI-controlled enemy entity */
-    private Enemy enemy;
-    /** Where the enemy respawns (set once in spawnTestEntities) */
-    private Vector3 enemySpawnPoint;
-    /** Counts down to enemy respawn after death; -1 = not pending */
-    private float enemyRespawnTimer = -1f;
-    private static final float ENEMY_RESPAWN_DELAY = 3.0f;  // seconds
-
     /** Current game state — drives which screen is active. Starts on MENU. */
     private GameState gameState = GameState.MENU;
+
+    // ── Phase 2.4 — Duel dummy ───────────────────────────────────────────────
+    /** Static opponent dummy for local damage / combat-loop testing. */
+    private Dummy duelDummy;
+    /** Edge detection for F1 (reset / respawn duel dummy). */
+    private boolean lastF1KeyPressed = false;
+
+    // ── Phase 2.4 / 2.6 — Map selection ──────────────────────────────────────
+    /** Display names for each selectable map. */
+    private static final String[]  MAP_NAMES        = { "TRAINING GROUND", "ALPHA BRAVO ARENA" };
+    /** Short description line shown on the map-select screen. */
+    private static final String[]  MAP_DESCRIPTIONS = {
+        "TEST MAP - CRATES - WALLS - DUMMIES",
+        "SYMMETRICAL 1V1 MAP - PHASE 2.6"
+    };
+    /** Whether each map can actually be played yet. */
+    private static final boolean[] MAP_AVAILABLE    = { true, true };
+    /** Currently selected map (0 = Training Ground by default). */
+    private int     selectedMapIndex  = 0;
+
+    // ── Phase 2.9 — Scoring ───────────────────────────────────────────────────
+    /** Player kill count this round. */
+    private int playerScore   = 0;
+    /** Opponent kill count this round (incremented each time the player dies). */
+    private int opponentScore = 0;
+    /** First to this many kills wins a round. */
+    private static final int WIN_SCORE = 5;
+    /** True when the player won the series (drives MATCH_END overlay). */
+    private boolean playerWon = false;
+    /** Countdown until the duel dummy auto-respawns after being killed. */
+    private float dummyRespawnTimer = 0f;
+    /** Seconds before the dummy comes back after death. */
+    private static final float DUMMY_RESPAWN_DELAY = 3f;
+
+    // ── Phase 2.10 — Rounds ────────────────────────────────────────────────────
+    /** Rounds won by the player — first to ROUNDS_TO_WIN takes the series. */
+    private int   playerRounds   = 0;
+    /** Rounds won by the opponent. */
+    private int   opponentRounds = 0;
+    /** Number of rounds needed to win the series (best of 3). */
+    private static final int   ROUNDS_TO_WIN = 2;
+    /** Remaining seconds in the current round (counts down to 0; Arena only). */
+    private float roundTimer     = 180f;
+    /** Full round duration in seconds (3 minutes). */
+    private static final float ROUND_TIME    = 180f;
+    /** Whether the player won the most recently completed round (shown on ROUND_END). */
+    private boolean playerWonRound = false;
+
+    // ── Combat feedback (hitmarker, damage flash) ──────────────────────────────
+    /** Counts down after a landed shot; drives the crosshair hitmarker. */
+    private float   hitMarkerTimer = 0f;
+    private static final float HITMARKER_DURATION = 0.18f;
+    /** True when the most recent hitmarker was a kill (renders red instead of white). */
+    private boolean hitMarkerKill  = false;
+    /** Counts down after the player takes damage; drives the red screen-edge flash. */
+    private float   damageFlashTimer = 0f;
+    private static final float DAMAGE_FLASH_DURATION = 0.5f;
+    /** Player health last frame — compared each frame to detect incoming damage. */
+    private float   lastPlayerHealth = 100f;
+
+    // ── Training Ground dummy respawn (Phase 2.4 practice range) ───────────────
+    /** Fixed spawn points for the three practice dummies. */
+    private static final Vector3[] TRAINING_DUMMY_SPAWNS = {
+        new Vector3( 0f, 0f, -12f),
+        new Vector3(-5f, 0f,  -8f),
+        new Vector3( 5f, 0f,  -8f)
+    };
+    /** Yellow practice-dummy colour, shared by initial build and respawns. */
+    private static final Vector3 TRAINING_DUMMY_COLOR = new Vector3(0.90f, 0.85f, 0.20f);
+    /** Pending training respawns: each entry is {x, y, z, timeLeft}. */
+    private final List<float[]> trainingRespawns = new ArrayList<>();
+
+    // ── Phase 2.7 — Team assignment ───────────────────────────────────────────
+    /** Player's chosen team for the current match. Defaults to ALPHA. */
+    private GameTeam playerTeam = GameTeam.ALPHA;
+    /** Blue accent color used for ALPHA team entities and HUD. */
+    private static final Vector3 TEAM_ALPHA_COLOR = new Vector3(0.35f, 0.60f, 1.00f);
+    /** Red accent color used for BRAVO team entities and HUD. */
+    private static final Vector3 TEAM_BRAVO_COLOR = new Vector3(1.00f, 0.30f, 0.30f);
 
     // ── Networking (Phase 2.5) — null fields mean singleplayer ────────────────
     /** "host" | "join" | null. Set by configureNetwork() before run(). */
@@ -128,9 +198,6 @@ public class Game {
     private static final float[] RECOIL_SNIPER  = { 4.5f, 1.2f };
     private static final float[] RECOIL_KNIFE   = { 0.0f, 0.0f };
 
-    /** Dummy spawn data for respawning. */
-    private List<DummySpawn> dummySpawns = new ArrayList<>();
-    private boolean lastRKeyPressed   = false;
     /** Edge detection for ESC — prevents held ESC from rapidly cycling pause/unpause. */
     private boolean lastEscKeyPressed = false;
 
@@ -150,21 +217,6 @@ public class Game {
     private final float[] projectionMatrix = new float[16];
     // Identity model matrix — map plane and world-baked entity meshes both use this
     private final float[] modelMatrix      = new float[16];
-
-    /**
-     * Stores spawn data for a dummy so it can be respawned later.
-     */
-    private static class DummySpawn {
-        String name;
-        Vector3 position;
-        Vector3 color;
-
-        DummySpawn(String name, Vector3 position, Vector3 color) {
-            this.name = name;
-            this.position = new Vector3(position);  // Copy to avoid mutation
-            this.color = new Vector3(color);
-        }
-    }
 
     /**
      * Bullet impact marker (small dark indicator on obstacle surfaces).
@@ -221,15 +273,15 @@ public class Game {
         map.init();
 
         // 4. Camera — initial orientation; position will be overridden by Player each frame
-        camera = new Camera(0f, 1.7f, 5f);
+        camera = new Camera(0f, 1.7f, 14f);
 
-        // 5. Player — feet at (0, 0, 5), on the ground plane
-        player = new Player(0f, 0f, 5f);
+        // 5. Player — ALPHA spawn at (0, 0, 14), facing north (-Z) toward BRAVO side
+        player = new Player(0f, 0f, 14f);
 
-        // 6. Input — register callbacks, lock cursor for FPS mouse look
+        // 6. Input — register callbacks. Cursor starts UNLOCKED (game opens in MENU).
+        //    Cursor is locked in enterState(PLAYING) and unlocked in all other states.
         input = new Input(window.getWindowHandle());
         input.init();
-        window.lockCursor();
 
         // 7. Projection matrix (FOV + aspect ratio + clip planes)
         float aspect = (float) Config.WINDOW_WIDTH / Config.WINDOW_HEIGHT;
@@ -275,9 +327,8 @@ public class Game {
         // 11c. Bullet shared tracer mesh — one GPU mesh reused by every bullet in flight
         Bullet.initSharedMesh();
 
-        // 12. Test entities — scatter crates, dummies, and a small building for raycast testing
+        // 12. Entity list — map is built by startMatch() when a game actually begins
         entities = new ArrayList<>();
-        spawnTestEntities();
 
         // 13. Networking — open the UDP peer and spawn the opponent entity (if configured)
         if (netMode != null) initNetwork();
@@ -368,84 +419,170 @@ public class Game {
     }
 
     /**
-     * Populate the world with practice targets and simple structures.
+     * Symmetrical 1v1 arena (ALPHA BRAVO ARENA).
+     * Dummy is colored to the opposing team based on playerTeam.
      *
-     * Layout (player spawns at (0,0,5) facing -Z, so everything is placed
-     * in front of the spawn point):
-     *   - Three crates at varying distances and sides for range testing
-     *   - Two tall thin "dummies" for headshot testing (top 25% of height)
-     *   - A small enclosure (back wall + two side walls) behind the crates
-     *   - Two tall pillars as landmarks
+     *   ALPHA spawn  z = +14   BRAVO spawn  z = -14
+     *   cover-a1/a2  z = +8    cover-b1/b2  z = -8
+     *   mid-box1/2 ±3  mid-wall center
+     *   Boundary walls ±11x / ±18z
      */
-    private void spawnTestEntities() {
-        Vector3 red       = new Vector3(0.85f, 0.25f, 0.20f);
-        Vector3 green     = new Vector3(0.25f, 0.75f, 0.30f);
-        Vector3 blue      = new Vector3(0.25f, 0.45f, 0.85f);
-        Vector3 yellow    = new Vector3(0.90f, 0.80f, 0.15f);
-        Vector3 orange    = new Vector3(0.95f, 0.55f, 0.15f);
+    private void buildAlphaBravoArena() {
         Vector3 stone     = new Vector3(0.55f, 0.55f, 0.58f);
-        Vector3 darkStone = new Vector3(0.35f, 0.35f, 0.38f);
+        Vector3 darkStone = new Vector3(0.30f, 0.30f, 0.33f);
+        Vector3 orange    = new Vector3(0.95f, 0.55f, 0.15f);
 
-        // --- Obstacles: non-damageable world geometry ---
-        entities.add(new Obstacle("crate-near",
-            new Vector3( 3f, 0f,  -2f), new Vector3(1.5f, 1.5f, 1.5f), orange));
-        entities.add(new Obstacle("crate-mid",
-            new Vector3(-3f, 0f,  -8f), new Vector3(2f,   2f,   2f),   green));
-        entities.add(new Obstacle("crate-far",
-            new Vector3( 5f, 0f, -15f), new Vector3(3f,   3f,   3f),   blue));
+        entities.add(new Obstacle("cover-a1",
+            new Vector3(-6f, 0f,  8f), new Vector3(3f, 1.5f, 1f), stone));
+        entities.add(new Obstacle("cover-a2",
+            new Vector3( 6f, 0f,  8f), new Vector3(3f, 1.5f, 1f), stone));
+        entities.add(new Obstacle("mid-box1",
+            new Vector3(-3f, 0f, 0f), new Vector3(2f, 2f, 2f), orange));
+        entities.add(new Obstacle("mid-box2",
+            new Vector3( 3f, 0f, 0f), new Vector3(2f, 2f, 2f), orange));
+        entities.add(new Obstacle("mid-wall",
+            new Vector3( 0f, 0f, 0f), new Vector3(1f, 3f, 6f), stone));
+        entities.add(new Obstacle("cover-b1",
+            new Vector3(-6f, 0f, -8f), new Vector3(3f, 1.5f, 1f), stone));
+        entities.add(new Obstacle("cover-b2",
+            new Vector3( 6f, 0f, -8f), new Vector3(3f, 1.5f, 1f), stone));
+        entities.add(new Obstacle("wall-n",
+            new Vector3( 0f, 0f, -18f), new Vector3(22f, 4f,  1f), darkStone));
+        entities.add(new Obstacle("wall-s",
+            new Vector3( 0f, 0f,  18f), new Vector3(22f, 4f,  1f), darkStone));
+        entities.add(new Obstacle("wall-e",
+            new Vector3( 11f, 0f,  0f), new Vector3(1f,  4f, 36f), darkStone));
+        entities.add(new Obstacle("wall-w",
+            new Vector3(-11f, 0f,  0f), new Vector3(1f,  4f, 36f), darkStone));
 
-        entities.add(new Obstacle("wall-back",
-            new Vector3( 0f,  0f, -20f), new Vector3(10f, 4f, 1f), stone));
-        entities.add(new Obstacle("wall-left",
-            new Vector3(-4.5f, 0f, -17f), new Vector3(1f, 4f, 5f), stone));
-        entities.add(new Obstacle("wall-right",
-            new Vector3( 4.5f, 0f, -17f), new Vector3(1f, 4f, 5f), stone));
+        // In networked play the opponent is the live RemotePlayer — no static dummy.
+        // Offline, spawn a colored practice dummy at the opposing team's spawn.
+        if (net == null) {
+            Vector3 dummyColor = (playerTeam == GameTeam.ALPHA) ? TEAM_BRAVO_COLOR : TEAM_ALPHA_COLOR;
+            float   dummyZ     = (playerTeam == GameTeam.ALPHA) ? -14f : 14f;
+            duelDummy = new Dummy("OPPONENT", new Vector3(0f, 0f, dummyZ), dummyColor);
+            entities.add(duelDummy);
+        }
 
-        entities.add(new Obstacle("pillar-left",
-            new Vector3(-8f, 0f, -10f), new Vector3(1f, 6f, 1f), darkStone));
-        entities.add(new Obstacle("pillar-right",
-            new Vector3( 8f, 0f, -10f), new Vector3(1f, 6f, 1f), darkStone));
-
-        // --- Dummies: damageable practice targets ---
-        spawnDummies(red, yellow);
-
-        // --- Enemy: AI-controlled hostile entity ---
-        enemySpawnPoint = new Vector3(5f, 0f, -15f);
-        enemy = new Enemy("grunt-1", new Vector3(enemySpawnPoint), player);
-        entities.add(enemy);
-
-        Logger.info("Spawned " + entities.size() + " test entities (2 dummies, 1 enemy, 7 obstacles)");
+        Logger.info("Arena built (" + entities.size() + " entities)  player=" + playerTeam.name()
+                    + (net != null ? "  [networked opponent]" : ""));
     }
 
     /**
-     * Spawn (or respawn) the dummy practice targets.
+     * Training Ground — asymmetric crate layout with three practice dummies.
+     * Offline only, no team or network context.
      */
-    private void spawnDummies(Vector3 redColor, Vector3 yellowColor) {
-        // Store spawn data for respawning later
-        dummySpawns.clear();
-        dummySpawns.add(new DummySpawn("dummy-close", new Vector3(0f, 0f, -5f), redColor));
-        dummySpawns.add(new DummySpawn("dummy-far", new Vector3(-2f, 0f, -12f), yellowColor));
+    private void buildTrainingGround() {
+        Vector3 wood     = new Vector3(0.58f, 0.38f, 0.18f);  // brown crates
+        Vector3 concrete = new Vector3(0.48f, 0.48f, 0.46f);  // concrete walls
 
-        // Create dummy entities
-        for (DummySpawn spawn : dummySpawns) {
-            entities.add(new Dummy(spawn.name, spawn.position, spawn.color));
+        // Crates — intentionally asymmetric to feel less formal than the arena
+        entities.add(new Obstacle("crate-1",
+            new Vector3(-3f, 0f, -3f), new Vector3(2f, 2f, 2f), wood));
+        entities.add(new Obstacle("crate-2",
+            new Vector3( 4f, 0f, -5f), new Vector3(2f, 2f, 2f), wood));
+        entities.add(new Obstacle("crate-3",
+            new Vector3(-5f, 0f,  3f), new Vector3(2f, 2f, 2f), wood));
+        entities.add(new Obstacle("crate-4",
+            new Vector3( 2f, 0f,  5f), new Vector3(2f, 2f, 2f), wood));
+        entities.add(new Obstacle("crate-wall",
+            new Vector3( 0f, 0f, -8f), new Vector3(5f, 1.5f, 1f), wood));
+
+        // Low concrete walls
+        entities.add(new Obstacle("wall-l",
+            new Vector3(-7f, 0f, 0f), new Vector3(1f, 2f, 8f), concrete));
+        entities.add(new Obstacle("wall-r",
+            new Vector3( 7f, 0f, -2f), new Vector3(1f, 2f, 6f), concrete));
+
+        // Three practice dummies — auto-respawn a few seconds after being killed
+        for (int i = 0; i < TRAINING_DUMMY_SPAWNS.length; i++) {
+            entities.add(new Dummy("DUMMY-" + (i + 1),
+                         new Vector3(TRAINING_DUMMY_SPAWNS[i]), TRAINING_DUMMY_COLOR));
         }
+        duelDummy = null;  // no single opponent HP bar in training
+
+        Logger.info("Training Ground built (" + entities.size() + " entities)");
     }
 
     /**
-     * Respawn all dummy practice targets with full health at their original spawn points.
-     * Removes dead dummies first, then recreates them.
+     * Start a brand-new series — resets round scores then kicks off Round 1.
+     * Called by PLAY_AGAIN and the initial MAP_CONFIRM / TEAM_CONFIRM flow.
      */
-    private void respawnDummies() {
-        // Remove dead dummies from the entity list
-        entities.removeIf(e -> e instanceof Dummy && e.isDead());
+    private void startMatch() {
+        playerRounds   = 0;
+        opponentRounds = 0;
+        startRound();
+    }
 
-        // Recreate dummies from spawn data
-        for (DummySpawn spawn : dummySpawns) {
-            entities.add(new Dummy(spawn.name, spawn.position, spawn.color));
+    /**
+     * Start (or restart) the current round — resets per-round state and rebuilds the map.
+     * Round scores (playerRounds / opponentRounds) are preserved across calls.
+     * Called by startMatch() for round 1, and by NEXT_ROUND for subsequent rounds.
+     */
+    private void startRound() {
+        // Clean up existing map entities but keep the network opponent alive
+        for (Entity e : entities) {
+            if (!(e instanceof RemotePlayer)) e.cleanup();
         }
+        entities.removeIf(e -> !(e instanceof RemotePlayer));
+        duelDummy = null;
 
-        Logger.info("Dummies respawned (press R)");
+        // Build the correct map
+        if (selectedMapIndex == 0) buildTrainingGround();
+        else                       buildAlphaBravoArena();
+
+        // Teleport player to the correct spawn for this map + team
+        applySpawn();
+
+        // Reset per-round combat state
+        player.resetHealth();
+        activeBullets.clear();
+        impacts.clear();
+        trainingRespawns.clear();
+        killNotification      = "";
+        killNotificationTimer = 0f;
+        playerScore           = 0;
+        opponentScore         = 0;
+        playerWonRound        = false;
+        dummyRespawnTimer     = 0f;
+        roundTimer            = ROUND_TIME;
+        hitMarkerTimer        = 0f;
+        damageFlashTimer      = 0f;
+        lastPlayerHealth      = player.getHealth();
+
+        int roundNum = playerRounds + opponentRounds + 1;
+        Logger.info("[ROUND " + roundNum + "] Start — series "
+                    + playerRounds + "-" + opponentRounds
+                    + "  map=" + MAP_NAMES[selectedMapIndex]);
+    }
+
+    /**
+     * Teleport the player to the correct spawn point for the active map and team,
+     * and reset camera orientation to face the opponent side.
+     *
+     * Training Ground : z=+10, facing -Z (toward the practice dummies)
+     * Arena ALPHA     : z=+14, facing -Z (toward BRAVO at z=-14)
+     * Arena BRAVO     : z=-14, facing +Z (toward ALPHA at z=+14)
+     *
+     * Camera yaw convention: -90° = facing -Z,  +90° = facing +Z.
+     */
+    private void applySpawn() {
+        if (selectedMapIndex == 0) {
+            // Training Ground — south end, looking north at the dummies
+            player.teleport(0f, 0f, 10f);
+            camera.setYaw(-90f);
+            camera.setPitch(0f);
+        } else if (playerTeam == GameTeam.BRAVO) {
+            // Arena — BRAVO side: north end, looking south toward ALPHA spawn
+            player.teleport(0f, 0f, -14f);
+            camera.setYaw(90f);
+            camera.setPitch(0f);
+        } else {
+            // Arena — ALPHA side (default): south end, looking north toward BRAVO spawn
+            player.teleport(0f, 0f, 14f);
+            camera.setYaw(-90f);
+            camera.setPitch(0f);
+        }
     }
 
     // =========================================================================
@@ -535,6 +672,81 @@ public class Game {
     /** Names of the five weapons in slot order — used by weapon-select HUD. */
     private static final String[] ALL_WEAPON_NAMES = { "PISTOL", "RIFLE", "SHOTGUN", "SNIPER", "KNIFE" };
 
+    // =========================================================================
+    // State management helpers
+    // =========================================================================
+
+    /**
+     * Transition to a new game state, managing cursor lock automatically.
+     *   PLAYING  → cursor locked (FPS mode)
+     *   anything else → cursor unlocked (mouse-driven UI)
+     */
+    private void enterState(GameState newState) {
+        gameState = newState;
+        if (newState == GameState.PLAYING) {
+            input.resetFirstMouse();   // prevent camera snap on re-lock
+            window.lockCursor();
+        } else {
+            window.unlockCursor();
+        }
+    }
+
+    /** Set camera to the fixed showcase angle used by the weapon-select screen. */
+    private void setupWeaponSelectCamera() {
+        camera.setPosition(0f, 1.7f, 5f);
+        camera.setYaw(-90f);
+        camera.setPitch(-15f);
+        previewWeaponIndex = 1;
+        switchWeapon(rifle, rifleVisuals);
+    }
+
+    /**
+     * Dispatch an action string returned by the HUD (from a mouse click or
+     * keyboard shortcut routed through the same path). No-op for null/unknown.
+     */
+    private void handleMenuAction(String action) {
+        if (action == null) return;
+        switch (action) {
+            // Main menu — PLAY goes to map select, not directly to game
+            case "START":          selectedMapIndex = 0;
+                                   enterState(GameState.MAP_SELECT);                       break;
+            case "WEAPON_SELECT":  setupWeaponSelectCamera();
+                                   enterState(GameState.WEAPON_SELECT);                    break;
+            case "MENU":           enterState(GameState.MENU);                             break;
+            case "RESUME":         enterState(GameState.PLAYING);                          break;
+            case "LEAVE":          enterState(GameState.MENU);                             break;
+            case "EXIT":           running = false;                                        break;
+            case "RESPAWN":        resetGame(); enterState(GameState.PLAYING);             break;
+            case "PLAY_AGAIN":     startMatch(); enterState(GameState.PLAYING);            break;
+            case "NEXT_ROUND":     startRound(); enterState(GameState.PLAYING);            break;
+            // Weapon select — SELECT confirms weapon then continues to map select
+            case "WEAPON_PREV":    previewWeaponIndex = (previewWeaponIndex + 4) % 5;
+                                   applyPreviewWeapon();                                   break;
+            case "WEAPON_NEXT":    previewWeaponIndex = (previewWeaponIndex + 1) % 5;
+                                   applyPreviewWeapon();                                   break;
+            case "WEAPON_CONFIRM": selectedMapIndex = 0;
+                                   enterState(GameState.MAP_SELECT);                       break;
+            // Map select
+            case "MAP_PREV":       selectedMapIndex =
+                                       (selectedMapIndex + MAP_NAMES.length - 1) % MAP_NAMES.length; break;
+            case "MAP_NEXT":       selectedMapIndex =
+                                       (selectedMapIndex + 1) % MAP_NAMES.length;         break;
+            case "MAP_CONFIRM":
+                // Training Ground is offline — skip team select, start immediately
+                if (selectedMapIndex == 0) { startMatch(); enterState(GameState.PLAYING); }
+                // Arena requires team selection first
+                else                       { enterState(GameState.TEAM_SELECT); }
+                break;
+            // Team select — set team, rebuild arena with correct colors, start
+            case "TEAM_ALPHA":     playerTeam = GameTeam.ALPHA;
+                                   startMatch(); enterState(GameState.PLAYING);            break;
+            case "TEAM_BRAVO":     playerTeam = GameTeam.BRAVO;
+                                   startMatch(); enterState(GameState.PLAYING);            break;
+            case "TEAM_BACK":      enterState(GameState.MAP_SELECT);                       break;
+            default: break;
+        }
+    }
+
     /**
      * Update game logic — called once per frame before render
      */
@@ -544,24 +756,77 @@ public class Game {
 
         float dt = (float) deltaTime;
 
-        // ── MENU state — world frozen, wait for ENTER/SPACE to start ────────
+        // ── MENU state — world frozen, wait for ENTER/SPACE to begin setup ─────
         if (gameState == GameState.MENU) {
-            input.consumeMouseDeltaX();  // discard to prevent camera snap on entry
+            input.consumeMouseDeltaX();
             input.consumeMouseDeltaY();
             if (input.isKeyDown(GLFW_KEY_ENTER) || input.isKeyDown(GLFW_KEY_SPACE)) {
-                gameState = GameState.PLAYING;
-                Logger.info("Game started — entering PLAYING state");
+                selectedMapIndex = 0;
+                enterState(GameState.MAP_SELECT);
+                Logger.info("Menu: entering map select");
             } else if (input.isKeyDown(GLFW_KEY_V)) {
-                // Enter weapon-select preview: fix camera to a clean display angle
-                camera.setPosition(0f, 1.7f, 5f);
-                camera.setYaw(-90f);
-                camera.setPitch(-15f);
-                previewWeaponIndex = 1;        // start on rifle
-                switchWeapon(rifle, rifleVisuals);
-                gameState = GameState.WEAPON_SELECT;
-                Logger.info("Entering weapon select screen");
+                setupWeaponSelectCamera();
+                enterState(GameState.WEAPON_SELECT);
+                Logger.info("Menu: entering weapon select");
             }
-            return;  // world frozen on menu
+            return;
+        }
+
+        // ── MAP_SELECT state — browse available maps ─────────────────────────
+        if (gameState == GameState.MAP_SELECT) {
+            input.consumeMouseDeltaX();
+            input.consumeMouseDeltaY();
+
+            boolean leftDown  = input.isKeyDown(GLFW_KEY_LEFT)  || input.isKeyDown(GLFW_KEY_A);
+            boolean rightDown = input.isKeyDown(GLFW_KEY_RIGHT) || input.isKeyDown(GLFW_KEY_D);
+
+            if (leftDown && !lastLeftKeyPressed) {
+                selectedMapIndex = (selectedMapIndex + MAP_NAMES.length - 1) % MAP_NAMES.length;
+            }
+            if (rightDown && !lastRightKeyPressed) {
+                selectedMapIndex = (selectedMapIndex + 1) % MAP_NAMES.length;
+            }
+            lastLeftKeyPressed  = leftDown;
+            lastRightKeyPressed = rightDown;
+
+            // ENTER — Training Ground starts directly; Arena goes to team select
+            if (input.isKeyDown(GLFW_KEY_ENTER)) {
+                if (selectedMapIndex == 0) { startMatch(); enterState(GameState.PLAYING); }
+                else                       { enterState(GameState.TEAM_SELECT); }
+                Logger.info("Map confirmed: " + MAP_NAMES[selectedMapIndex]);
+            }
+
+            // ESC / BACKSPACE — return to main menu
+            boolean escDown = input.isKeyDown(GLFW_KEY_ESCAPE) || input.isKeyDown(GLFW_KEY_BACKSPACE);
+            if (escDown && !lastEscKeyPressed) {
+                enterState(GameState.MENU);
+                Logger.info("Returning to menu from map select");
+            }
+            lastEscKeyPressed = escDown;
+            return;  // world frozen on map select
+        }
+
+        // ── TEAM_SELECT state — pick ALPHA or BRAVO before the match ────────
+        if (gameState == GameState.TEAM_SELECT) {
+            input.consumeMouseDeltaX();
+            input.consumeMouseDeltaY();
+            // 1 = ALPHA, 2 = BRAVO, ENTER = keep current selection (default ALPHA)
+            if (input.isKeyDown(GLFW_KEY_1)) {
+                playerTeam = GameTeam.ALPHA;
+                startMatch(); enterState(GameState.PLAYING);
+            } else if (input.isKeyDown(GLFW_KEY_2)) {
+                playerTeam = GameTeam.BRAVO;
+                startMatch(); enterState(GameState.PLAYING);
+            } else if (input.isKeyDown(GLFW_KEY_ENTER)) {
+                startMatch(); enterState(GameState.PLAYING);
+            }
+            boolean escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
+            if (escDown && !lastEscKeyPressed) {
+                enterState(GameState.MAP_SELECT);
+                Logger.info("Team select: back to map select");
+            }
+            lastEscKeyPressed = escDown;
+            return;
         }
 
         // ── WEAPON_SELECT state — browse weapon models before playing ────────
@@ -585,16 +850,17 @@ public class Game {
             lastLeftKeyPressed  = leftDown;
             lastRightKeyPressed = rightDown;
 
-            // ENTER → start playing with the selected weapon
+            // ENTER → weapon chosen, continue to map select
             if (input.isKeyDown(GLFW_KEY_ENTER)) {
-                gameState = GameState.PLAYING;
-                Logger.info("Starting game with " + currentWeaponName());
+                selectedMapIndex = 0;
+                enterState(GameState.MAP_SELECT);
+                Logger.info("Weapon confirmed: " + currentWeaponName());
             }
 
             // ESC / BACKSPACE → back to main menu
             boolean escDown = input.isKeyDown(GLFW_KEY_ESCAPE) || input.isKeyDown(GLFW_KEY_BACKSPACE);
             if (escDown && !lastEscKeyPressed) {
-                gameState = GameState.MENU;
+                enterState(GameState.MENU);
                 Logger.info("Returning to menu from weapon select");
             }
             lastEscKeyPressed = escDown;
@@ -608,14 +874,10 @@ public class Game {
             boolean escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
 
             if ((escDown && !lastEscKeyPressed) || input.isKeyDown(GLFW_KEY_R)) {
-                // ESC (edge) or R → resume game.
-                // Set lastRKeyPressed=true so the PLAYING dummy-respawn edge detector
-                // does not immediately fire if R is still held on the next frame.
-                lastRKeyPressed = true;
-                gameState = GameState.PLAYING;
+                enterState(GameState.PLAYING);
                 Logger.info("Game resumed — entering PLAYING state");
             } else if (input.isKeyDown(GLFW_KEY_L)) {
-                gameState = GameState.MENU;
+                enterState(GameState.MENU);
                 Logger.info("Returning to menu — entering MENU state");
             } else if (input.isKeyDown(GLFW_KEY_E)) {
                 running = false;
@@ -627,14 +889,47 @@ public class Game {
 
         // ── DEAD state — world frozen, wait for ENTER to respawn ─────────────
         if (gameState == GameState.DEAD) {
-            input.consumeMouseDeltaX();  // discard to prevent camera snap on respawn
+            input.consumeMouseDeltaX();
             input.consumeMouseDeltaY();
             if (input.isKeyDown(GLFW_KEY_ENTER)) {
                 resetGame();
-                gameState = GameState.PLAYING;
+                enterState(GameState.PLAYING);
                 Logger.info("Player respawned — entering PLAYING state");
             }
-            return;  // world frozen on death screen
+            return;
+        }
+
+        // ── ROUND_END state — brief result screen between rounds ─────────────
+        if (gameState == GameState.ROUND_END) {
+            input.consumeMouseDeltaX();
+            input.consumeMouseDeltaY();
+            boolean escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
+            if (escDown && !lastEscKeyPressed) {
+                enterState(GameState.MENU);
+                Logger.info("[ROUND] Returning to menu from round end");
+            }
+            if (input.isKeyDown(GLFW_KEY_ENTER)) {
+                startRound();
+                enterState(GameState.PLAYING);
+                Logger.info("[ROUND] Starting next round via ENTER");
+            }
+            lastEscKeyPressed = escDown;
+            return;
+        }
+
+        // ── MATCH_END state — series over, show result + options ─────────────
+        if (gameState == GameState.MATCH_END) {
+            input.consumeMouseDeltaX();
+            input.consumeMouseDeltaY();
+            boolean escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
+            if (escDown && !lastEscKeyPressed) {
+                enterState(GameState.MENU);
+            }
+            if (input.isKeyDown(GLFW_KEY_ENTER)) {
+                startMatch(); enterState(GameState.PLAYING);
+            }
+            lastEscKeyPressed = escDown;
+            return;
         }
 
         // ── PLAYING state — normal game update ────────────────────────────────
@@ -666,7 +961,7 @@ public class Game {
         // --- Pause game (ESC key — edge detected so holding ESC doesn't spam-pause) ---
         boolean escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
         if (escDown && !lastEscKeyPressed) {
-            gameState = GameState.PAUSED;
+            enterState(GameState.PAUSED);
             Logger.info("Game paused — entering PAUSED state");
         }
         lastEscKeyPressed = escDown;
@@ -682,17 +977,27 @@ public class Game {
         currentWeapon.update(dt);
         currentWeaponVisuals.update(dt);
 
-        // --- Enemy AI update ---
-        if (enemy != null && !enemy.isDead()) {
-            enemy.update(dt);
+        // --- F1 — reset / respawn duel dummy (offline Arena only, edge detected) ---
+        boolean f1Down = input.isKeyDown(GLFW_KEY_F1);
+        if (f1Down && !lastF1KeyPressed && selectedMapIndex == 1 && net == null) {
+            if (duelDummy != null && !duelDummy.isDead()) {
+                duelDummy.resetHealth();
+                Logger.info("[DUEL] Dummy HP reset to 100");
+            } else {
+                // Dummy was eliminated — clear stale ref (if removeIf hasn't yet) then respawn
+                if (duelDummy != null) {
+                    entities.remove(duelDummy);
+                    duelDummy.cleanup();
+                }
+                Vector3 dummyColor = (playerTeam == GameTeam.ALPHA)
+                                     ? TEAM_BRAVO_COLOR : TEAM_ALPHA_COLOR;
+                float   dummyZ     = (playerTeam == GameTeam.ALPHA) ? -14f : 14f;
+                duelDummy = new Dummy("OPPONENT", new Vector3(0f, 0f, dummyZ), dummyColor);
+                entities.add(duelDummy);
+                Logger.info("[DUEL] Dummy respawned at opponent spawn z=" + dummyZ);
+            }
         }
-
-        // --- Respawn dummies on R key press (edge detection) ---
-        boolean rKeyDown = input.isKeyDown(GLFW_KEY_R);
-        if (rKeyDown && !lastRKeyPressed) {
-            respawnDummies();
-        }
-        lastRKeyPressed = rKeyDown;
+        lastF1KeyPressed = f1Down;
 
         // --- Aim raycast (only Dummies, not obstacles) ---
         RaycastResult fullHit = Collider.raycast(
@@ -746,6 +1051,12 @@ public class Game {
                 Logger.info(killNotification);
             }
 
+            // Any landed shot → trigger the crosshair hitmarker (red on kill)
+            if (b.didDamageEntity()) {
+                hitMarkerTimer = HITMARKER_DURATION;
+                hitMarkerKill  = (b.getLastKillNotification() != null);
+            }
+
             b.clearResults();
 
             if (!b.isAlive()) activeBullets.remove(bi);
@@ -766,12 +1077,14 @@ public class Game {
             if (rs != null && remotePlayer != null) {
                 remotePlayer.setState(rs);
 
-                // One-shot kill notice when the opponent transitions alive → dead
+                // One-shot kill notice + score when the opponent transitions alive → dead
                 boolean nowAlive = remotePlayer.isAliveRemote();
                 if (remoteWasAlive && !nowAlive) {
                     killNotification      = "ELIMINATED OPPONENT";
                     killNotificationTimer = KILL_NOTIF_DURATION;
-                    Logger.info("Opponent eliminated");
+                    playerScore++;   // networked kills score the same as dummy kills
+                    Logger.info("[SCORE] Opponent eliminated. Score: "
+                                + playerScore + "-" + opponentScore);
                 }
                 remoteWasAlive = nowAlive;
             }
@@ -790,14 +1103,30 @@ public class Game {
             net.update(dt, local);
         }
 
+        // --- Round timer countdown (Arena only — Training Ground is open-ended) ---
+        if (selectedMapIndex == 1) {
+            roundTimer -= dt;
+            if (roundTimer <= 0f) {
+                roundTimer = 0f;
+                // Tie goes to the player
+                endRound(playerScore >= opponentScore);
+                return;
+            }
+        }
+
         // --- Remove dead entities, freeing GPU resources ---
         entities.removeIf(e -> {
             if (e.isDead()) {
-                // If the enemy just died, start the respawn countdown
-                if (e == enemy && enemyRespawnTimer < 0f) {
-                    enemyRespawnTimer = ENEMY_RESPAWN_DELAY;
-                    enemy = null;
-                    Logger.info("Enemy killed — respawning in " + (int)ENEMY_RESPAWN_DELAY + "s");
+                if (e == duelDummy) {
+                    duelDummy = null;
+                    // Score the kill and start auto-respawn countdown
+                    playerScore++;
+                    dummyRespawnTimer = DUMMY_RESPAWN_DELAY;
+                    Logger.info("[SCORE] Player kill. Score: " + playerScore + "-" + opponentScore);
+                } else if (selectedMapIndex == 0 && e instanceof Dummy) {
+                    // Training practice dummy — schedule it to respawn where it stood
+                    Vector3 p = e.getPosition();
+                    trainingRespawns.add(new float[]{ p.x, p.y, p.z, DUMMY_RESPAWN_DELAY });
                 }
                 e.cleanup();
                 return true;
@@ -805,14 +1134,35 @@ public class Game {
             return false;
         });
 
-        // --- Enemy respawn countdown ---
-        if (enemyRespawnTimer > 0f) {
-            enemyRespawnTimer -= dt;
-            if (enemyRespawnTimer <= 0f) {
-                enemyRespawnTimer = -1f;
-                enemy = new Enemy("grunt-1", new Vector3(enemySpawnPoint), player);
-                entities.add(enemy);
-                Logger.info("Enemy respawned at " + enemySpawnPoint);
+        // --- Check player win condition (round end by kill limit) ---
+        if (playerScore >= WIN_SCORE) {
+            endRound(true);
+            return;
+        }
+
+        // --- Dummy auto-respawn (Arena only) ---
+        if (selectedMapIndex == 1 && duelDummy == null && dummyRespawnTimer > 0f) {
+            dummyRespawnTimer -= dt;
+            if (dummyRespawnTimer <= 0f) {
+                Vector3 dummyColor = (playerTeam == GameTeam.ALPHA) ? TEAM_BRAVO_COLOR : TEAM_ALPHA_COLOR;
+                float   dummyZ     = (playerTeam == GameTeam.ALPHA) ? -14f : 14f;
+                duelDummy = new Dummy("OPPONENT", new Vector3(0f, 0f, dummyZ), dummyColor);
+                entities.add(duelDummy);
+                Logger.info("[DUEL] Dummy auto-respawned");
+            }
+        }
+
+        // --- Training Ground dummy respawns (count down, then re-add) ---
+        if (!trainingRespawns.isEmpty()) {
+            for (int i = trainingRespawns.size() - 1; i >= 0; i--) {
+                float[] r = trainingRespawns.get(i);
+                r[3] -= dt;
+                if (r[3] <= 0f) {
+                    entities.add(new Dummy("DUMMY",
+                                 new Vector3(r[0], r[1], r[2]), TRAINING_DUMMY_COLOR));
+                    trainingRespawns.remove(i);
+                    Logger.info("[TRAINING] Practice dummy respawned");
+                }
             }
         }
 
@@ -825,55 +1175,84 @@ public class Game {
         // --- Tick kill notification ---
         if (killNotificationTimer > 0f) killNotificationTimer -= dt;
 
-        // --- Player death check — transition to DEAD state ---
+        // --- Tick combat-feedback timers (hitmarker + damage flash) ---
+        if (hitMarkerTimer   > 0f) hitMarkerTimer   -= dt;
+        if (damageFlashTimer > 0f) damageFlashTimer -= dt;
+
+        // --- Detect incoming damage → trigger the red screen flash ---
+        float curHealth = player.getHealth();
+        if (curHealth < lastPlayerHealth) {
+            damageFlashTimer = DAMAGE_FLASH_DURATION;
+        }
+        lastPlayerHealth = curHealth;
+
+        // --- Player death check ---
         if (player.isDead()) {
-            gameState = GameState.DEAD;
-            Logger.info("Player died — entering DEAD state");
+            opponentScore++;
+            Logger.info("[SCORE] Opponent kill. Score: " + playerScore + "-" + opponentScore);
+            if (opponentScore >= WIN_SCORE) {
+                endRound(false);
+            } else {
+                enterState(GameState.DEAD);
+                Logger.info("Player died (" + opponentScore + " opp kills) — respawning");
+            }
+            return;
         }
     }
 
     /**
-     * Reset world state for a fresh round after player death.
-     * Restores health, clears bullets and notifications, respawns enemy and dummies.
+     * Respawn the player mid-round — heals the player and re-applies the spawn
+     * point without touching scores, round counts, or the round timer.
+     * Called by RESPAWN (death screen) and ESC→resume-from-dead shortcuts.
      */
     private void resetGame() {
-        // 1. Heal player
         player.resetHealth();
-
-        // 2. Clear all projectiles in flight
+        applySpawn();
         activeBullets.clear();
-
-        // 3. Clear kill notification
+        impacts.clear();
         killNotification      = "";
         killNotificationTimer = 0f;
+        hitMarkerTimer        = 0f;
+        damageFlashTimer      = 0f;
+        lastPlayerHealth      = player.getHealth();
+    }
 
-        // 4. Remove current enemy (force-kill) and schedule immediate respawn
-        if (enemy != null) {
-            entities.remove(enemy);
-            enemy.cleanup();
-            enemy = null;
+    /**
+     * Award a round win to the given side, then check whether the series is decided.
+     * Transitions to ROUND_END (next round pending) or MATCH_END (series over).
+     *
+     * @param playerWonThis true if the player won this round
+     */
+    private void endRound(boolean playerWonThis) {
+        playerWonRound = playerWonThis;
+        if (playerWonThis) playerRounds++;
+        else               opponentRounds++;
+
+        Logger.info("[ROUND END] " + (playerWonThis ? "player" : "opponent")
+                    + " wins round — series " + playerRounds + "-" + opponentRounds);
+
+        if (playerRounds >= ROUNDS_TO_WIN) {
+            playerWon = true;
+            enterState(GameState.MATCH_END);
+        } else if (opponentRounds >= ROUNDS_TO_WIN) {
+            playerWon = false;
+            enterState(GameState.MATCH_END);
+        } else {
+            enterState(GameState.ROUND_END);
         }
-        enemyRespawnTimer = 0.1f;  // respawn almost immediately
-
-        // 5. Remove all dummies (alive or dead) and recreate from spawn data
-        entities.removeIf(e -> e instanceof Dummy);
-        for (DummySpawn spawn : dummySpawns) {
-            entities.add(new Dummy(spawn.name, spawn.position, spawn.color));
-        }
-
-        // 6. Clear bullet-hole impact markers
-        impacts.clear();
-
-        Logger.info("Game reset — player health restored, world reloaded");
     }
 
     /**
      * Render frame — called once per frame after update
      */
     private void render() {
-        // Weapon-select shows the gun against a pure dark background;
+        // Weapon-select and map-select show content against a pure dark background;
         // all other states use the default mid-gray sky color.
-        if (gameState == GameState.WEAPON_SELECT) {
+        if (gameState == GameState.WEAPON_SELECT
+                || gameState == GameState.MAP_SELECT
+                || gameState == GameState.TEAM_SELECT
+                || gameState == GameState.ROUND_END
+                || gameState == GameState.MATCH_END) {
             GL11.glClearColor(0.04f, 0.04f, 0.07f, 1f);
         } else {
             GL11.glClearColor(0.5f, 0.5f, 0.5f, 1f);
@@ -885,21 +1264,26 @@ public class Game {
         renderer.getShader().setMat4("view",       camera.getViewMatrix());
         renderer.getShader().setMat4("model",      modelMatrix);
 
-        // Ground plane — hidden during weapon-select (clean dark background only)
-        if (gameState != GameState.WEAPON_SELECT) {
+        // Ground plane — hidden during weapon-select and map-select (clean dark background)
+        if (gameState != GameState.WEAPON_SELECT
+                && gameState != GameState.MAP_SELECT
+                && gameState != GameState.TEAM_SELECT
+                && gameState != GameState.ROUND_END
+                && gameState != GameState.MATCH_END) {
             map.render();
         }
 
-        // World entities — only shown during PLAYING / PAUSED.
-        // WEAPON_SELECT and MENU/DEAD show a clean floor-only background.
-        if (gameState == GameState.PLAYING || gameState == GameState.PAUSED) {
+        // World entities — shown during PLAYING / PAUSED / DEAD (frozen scene behind
+        // the translucent death overlay). MENU and the menu screens stay clean.
+        if (gameState == GameState.PLAYING || gameState == GameState.PAUSED
+                || gameState == GameState.DEAD) {
             for (Entity e : entities) {
                 // Hidden until first packet / downed opponents are not drawn
                 if (e instanceof RemotePlayer && !((RemotePlayer) e).isAliveRemote()) {
                     continue;
                 }
-                // Enemy and RemotePlayer meshes are baked at the origin → translate per frame
-                if (e instanceof Enemy || e instanceof RemotePlayer) {
+                // RemotePlayer mesh is baked at the origin → translate per frame
+                if (e instanceof RemotePlayer) {
                     Vector3 p = e.getPosition();
                     float[] entityMatrix = new float[16];
                     new Matrix4f().translate(p.x, p.y, p.z).get(entityMatrix);
@@ -970,12 +1354,36 @@ public class Game {
                                 ? currentPreviewStats() : null;
         // Network status line (null in singleplayer → HUD draws nothing)
         String netStatus = (net != null) ? net.statusLine() : null;
-        hud.render(timer.getFPS(), aimHit, notif,
+        // Duel dummy HP: passed to HUD only when alive (-1 = not present / hide)
+        float duelDummyHp = (duelDummy != null && !duelDummy.isDead())
+                            ? duelDummy.getHealth() : -1f;
+        // Mouse state for UI hit-testing.
+        // consumeLeftMousePressed() is safe here: weapon fire in update() already
+        // consumed the click for PLAYING state, so this only returns true in menu states.
+        float uiMouseX = input.getMouseX();
+        float uiMouseY = input.getMouseY();
+        boolean uiClick = input.consumeLeftMousePressed();
+        // Round timer: only meaningful for Arena; pass -1 for Training Ground (HUD hides it)
+        float hudRoundTimer = (selectedMapIndex == 1) ? roundTimer : -1f;
+        // Combat feedback: normalize timers to 0..1 intensities for the HUD
+        float hitMarkerAlpha   = (HITMARKER_DURATION    > 0f) ? hitMarkerTimer   / HITMARKER_DURATION    : 0f;
+        float damageFlashAlpha = (DAMAGE_FLASH_DURATION > 0f) ? damageFlashTimer / DAMAGE_FLASH_DURATION : 0f;
+        // Crosshair bloom from recent recoil (degrees → pixels, capped)
+        float crosshairSpread  = Math.min(18f, camera.getRecoilMagnitude() * 6f);
+        String menuAction = hud.render(timer.getFPS(), aimHit, notif,
                    player.getHealth(), 100f,
                    weaponNames, ammoTypes, currentSlot,
                    previewWeaponIndex, previewStats,
                    gameState, netStatus,
+                   selectedMapIndex, MAP_NAMES, MAP_DESCRIPTIONS, MAP_AVAILABLE,
+                   duelDummyHp,
+                   playerTeam,
+                   playerScore, opponentScore, WIN_SCORE, playerWon,
+                   playerRounds, opponentRounds, ROUNDS_TO_WIN, hudRoundTimer, playerWonRound,
+                   hitMarkerAlpha, hitMarkerKill, damageFlashAlpha, crosshairSpread,
+                   uiMouseX, uiMouseY, uiClick,
                    Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT);
+        handleMenuAction(menuAction);
 
         window.swapBuffers();
     }

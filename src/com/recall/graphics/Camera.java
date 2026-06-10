@@ -197,6 +197,14 @@ public class Camera {
     public float getYaw()        { return yaw; }
     public float getPitch()      { return pitch; }
 
+    /**
+     * Current recoil magnitude in degrees (combined yaw + pitch kick).
+     * Used by the HUD to bloom the crosshair after firing; decays to 0.
+     */
+    public float getRecoilMagnitude() {
+        return (float) Math.sqrt(recoilYaw * recoilYaw + recoilPitch * recoilPitch);
+    }
+
     /** Override yaw directly — used to fix orientation for menu/preview states. */
     public void setYaw(float yaw)     { this.yaw = yaw; }
     /** Override pitch directly — used to fix orientation for menu/preview states. */
