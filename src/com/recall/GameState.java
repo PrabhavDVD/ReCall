@@ -11,7 +11,11 @@ package com.recall;
 public enum GameState {
     MENU,
     WEAPON_SELECT,
+    MAP_SELECT,
+    TEAM_SELECT,
     PLAYING,
     PAUSED,
-    DEAD
+    DEAD,
+    ROUND_END,
+    MATCH_END
 }

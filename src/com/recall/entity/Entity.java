@@ -60,7 +60,10 @@ public abstract class Entity {
         health = Math.max(0f, health - amount);
     }
 
-    public boolean isDead()      { return health <= 0f; }
+    public boolean isDead()       { return health <= 0f; }
+
+    /** Restore health to maximum. */
+    public void resetHealth()    { health = maxHealth; }
 
     // ===== Getters =====
     public Vector3 getPosition() { return position; }

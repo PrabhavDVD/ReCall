@@ -208,6 +208,23 @@ public class Player {
         health = 100f;
     }
 
+    /**
+     * Teleport player to a new spawn point and zero all velocity.
+     * Called by Game.applySpawn() at the start of every match.
+     *
+     * @param x, y, z  New feet position (use y=0 for ground level)
+     */
+    public void teleport(float x, float y, float z) {
+        position.x  = x;
+        position.y  = y;
+        position.z  = z;
+        velocity.x  = 0f;
+        velocity.y  = 0f;
+        velocity.z  = 0f;
+        isGrounded  = (y <= GROUND_Y);
+        Logger.info("Player teleported to (" + x + ", " + y + ", " + z + ")");
+    }
+
     /** Returns true if the player's current position overlaps any obstacle AABB. */
     private boolean overlapsAnyObstacle(List<Entity> obstacles, boolean crouch) {
         float eyeY = position.y + (crouch ? CROUCH_EYE_HEIGHT : EYE_HEIGHT);

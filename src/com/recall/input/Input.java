@@ -102,6 +102,20 @@ public class Input {
         return was;
     }
 
+    // ===== Mouse Position (absolute screen coords, valid when cursor is unlocked) =====
+
+    /** Current cursor X position in screen pixels (0 = left edge). */
+    public float getMouseX() { return lastMouseX; }
+    /** Current cursor Y position in screen pixels (0 = top edge). */
+    public float getMouseY() { return lastMouseY; }
+
+    /**
+     * Reset the first-mouse guard so the next cursor event seeds position
+     * without producing a delta. Call this when switching cursor modes to
+     * prevent a large camera jump on re-lock.
+     */
+    public void resetFirstMouse() { firstMouse = true; }
+
     // ===== Mouse Delta =====
 
     /**

@@ -62,6 +62,10 @@ public class Bullet {
     private Vector3 lastImpactPoint;
     /** Kill string for HUD; non-null for one frame after killing an entity. */
     private String  lastKillNotification;
+    /** True for one frame after this bullet damaged a damageable entity (drives the hitmarker). */
+    private boolean lastDamagedEntity;
+    /** True for one frame when the damaging hit was a headshot. */
+    private boolean lastHitWasHeadshot;
 
     // ── Rotation cache (direction is constant → compute once) ────────────────
     // We pre-compute the axis/angle that rotates the mesh from its default
@@ -147,6 +151,10 @@ public class Bullet {
                 float dmg = hit.isHeadshot ? damage * headshotMult : damage;
                 hit.entity.takeDamage(dmg);
                 alreadyHit.add(hit.entity);
+
+                // Signal the hitmarker (every damaging hit, kill or not)
+                lastDamagedEntity  = true;
+                lastHitWasHeadshot = hit.isHeadshot;
 
                 if (hit.entity.isDead()) {
                     lastKillNotification = "KILLED " + hit.entity.getName().toUpperCase();
@@ -246,10 +254,16 @@ public class Bullet {
 
     public Vector3 getLastImpactPoint()      { return lastImpactPoint; }
     public String  getLastKillNotification() { return lastKillNotification; }
+    /** True for one frame after this bullet damaged an entity (kill or not). */
+    public boolean didDamageEntity()         { return lastDamagedEntity; }
+    /** True for one frame when the damaging hit was a headshot. */
+    public boolean lastHitWasHeadshot()      { return lastHitWasHeadshot; }
 
     /** Clear per-frame hit results — call after Game.java has read them. */
     public void clearResults() {
         lastImpactPoint      = null;
         lastKillNotification = null;
+        lastDamagedEntity    = false;
+        lastHitWasHeadshot   = false;
     }
 }

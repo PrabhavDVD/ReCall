@@ -7,6 +7,7 @@ import org.lwjgl.BufferUtils;
 import org.joml.Matrix4f;
 import java.nio.FloatBuffer;
 import com.recall.GameState;
+import com.recall.GameTeam;
 import com.recall.graphics.Shader;
 import com.recall.physics.RaycastResult;
 import com.recall.util.Logger;
@@ -40,8 +41,8 @@ public class SimpleHUD {
     private static final int CROSSHAIR_ARM   = 8;
     private static final int CROSSHAIR_THICK = 2;
 
-    /** Floats per vertex: 2 pos + 3 color. */
-    private static final int STRIDE_FLOATS = 5;
+    /** Floats per vertex: 2 pos + 4 rgba. */
+    private static final int STRIDE_FLOATS = 6;
     /** Vertices per quad (two triangles). */
     private static final int QUAD_VERTS    = 6;
     /** Floats per quad. */
@@ -123,9 +124,9 @@ public class SimpleHUD {
         String vertexSrc =
             "#version 330 core\n" +
             "layout(location = 0) in vec2 position;\n" +
-            "layout(location = 1) in vec3 color;\n" +
+            "layout(location = 1) in vec4 color;\n" +
             "uniform mat4 projection;\n" +
-            "out VS_OUT { vec3 color; } vs_out;\n" +
+            "out VS_OUT { vec4 color; } vs_out;\n" +
             "void main() {\n" +
             "    gl_Position = projection * vec4(position, 0.0, 1.0);\n" +
             "    vs_out.color = color;\n" +
@@ -133,10 +134,10 @@ public class SimpleHUD {
 
         String fragmentSrc =
             "#version 330 core\n" +
-            "in VS_OUT { vec3 color; } fs_in;\n" +
+            "in VS_OUT { vec4 color; } fs_in;\n" +
             "out vec4 FragColor;\n" +
             "void main() {\n" +
-            "    FragColor = vec4(fs_in.color, 1.0);\n" +
+            "    FragColor = fs_in.color;\n" +
             "}\n";
 
         orthoShader = new Shader(vertexSrc, fragmentSrc);
@@ -157,9 +158,9 @@ public class SimpleHUD {
         GL30.glBindVertexArray(glyphVAO);
         GL30.glBindBuffer(GL30.GL_ARRAY_BUFFER, glyphVBO);
 
-        // layout: 2 floats pos + 3 floats color = 5 floats = 20 bytes stride
-        GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 20, 0);
-        GL20.glVertexAttribPointer(1, 3, GL11.GL_FLOAT, false, 20, 8);
+        // layout: 2 floats pos + 4 floats rgba = 6 floats = 24 bytes stride
+        GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 24, 0);
+        GL20.glVertexAttribPointer(1, 4, GL11.GL_FLOAT, false, 24, 8);
         GL20.glEnableVertexAttribArray(0);
         GL20.glEnableVertexAttribArray(1);
 
@@ -187,44 +188,157 @@ public class SimpleHUD {
      * @param windowWidth     Window width in pixels
      * @param windowHeight    Window height in pixels
      */
-    public void render(int fps, RaycastResult aim, String notification,
-                       float playerHealth, float playerMaxHealth,
-                       String[] weaponNames, String[] ammoTypes, int currentSlot,
-                       int previewSlot, String[] previewStats,
-                       GameState gameState, String netStatus,
-                       int windowWidth, int windowHeight) {
+    /**
+     * Render the HUD for one frame. Returns an action string if a button was
+     * clicked (or null if nothing was activated). The caller (Game) dispatches
+     * the action via handleMenuAction().
+     */
+    public String render(int fps, RaycastResult aim, String notification,
+                         float playerHealth, float playerMaxHealth,
+                         String[] weaponNames, String[] ammoTypes, int currentSlot,
+                         int previewSlot, String[] previewStats,
+                         GameState gameState, String netStatus,
+                         int mapPreviewSlot, String[] mapNames,
+                         String[] mapDescriptions, boolean[] mapAvailable,
+                         float duelDummyHp,
+                         GameTeam playerTeam,
+                         int playerScore, int opponentScore, int winScore, boolean playerWon,
+                         int playerRounds, int opponentRounds, int roundsToWin,
+                         float roundTimer, boolean playerWonRound,
+                         float hitMarkerAlpha, boolean hitMarkerKill,
+                         float damageFlashAlpha, float crosshairSpread,
+                         float mouseX, float mouseY, boolean mouseClicked,
+                         int windowWidth, int windowHeight) {
         floatCount = 0;
+        String action = null;
 
         if (gameState == GameState.MENU) {
-            drawMenuScreen(windowWidth, windowHeight);
+            action = drawMenuScreen(mouseX, mouseY, mouseClicked, windowWidth, windowHeight);
+
+        } else if (gameState == GameState.MAP_SELECT) {
+            action = drawMapSelectScreen(mapPreviewSlot, mapNames, mapDescriptions, mapAvailable,
+                                         mouseX, mouseY, mouseClicked, windowWidth, windowHeight);
+
+        } else if (gameState == GameState.TEAM_SELECT) {
+            action = drawTeamSelectScreen(mouseX, mouseY, mouseClicked, windowWidth, windowHeight);
 
         } else if (gameState == GameState.WEAPON_SELECT) {
-            drawWeaponSelectScreen(weaponNames, previewSlot, previewStats, windowWidth, windowHeight);
+            action = drawWeaponSelectScreen(weaponNames, previewSlot,
+                                            mouseX, mouseY, mouseClicked, windowWidth, windowHeight);
 
         } else if (gameState == GameState.PAUSED) {
-            drawPauseMenu(windowWidth, windowHeight);
+            action = drawPauseMenu(mouseX, mouseY, mouseClicked, windowWidth, windowHeight);
 
         } else if (gameState == GameState.DEAD) {
-            drawDeathScreen(windowWidth, windowHeight);
+            action = drawDeathScreen(mouseX, mouseY, mouseClicked,
+                                     playerScore, opponentScore, windowWidth, windowHeight);
+
+        } else if (gameState == GameState.ROUND_END) {
+            action = drawRoundEndScreen(playerWonRound, playerRounds, opponentRounds,
+                                        roundsToWin, playerScore, opponentScore,
+                                        mouseX, mouseY, mouseClicked, windowWidth, windowHeight);
+
+        } else if (gameState == GameState.MATCH_END) {
+            action = drawMatchEndScreen(playerWon, playerScore, opponentScore, winScore,
+                                        playerRounds, opponentRounds,
+                                        mouseX, mouseY, mouseClicked, windowWidth, windowHeight);
 
         } else {
             // ── PLAYING ──────────────────────────────────────────────────────
+
+            // Damage flash — translucent red bands at the screen edges when hit
+            if (damageFlashAlpha > 0f) {
+                float a    = Math.min(0.55f, damageFlashAlpha * 0.55f);
+                float band = 70f;   // thickness of the edge vignette
+                drawRect(0,                       0,                        windowWidth, band,         0.85f, 0.05f, 0.05f, a);  // top
+                drawRect(0,                       windowHeight - band,      windowWidth, band,         0.85f, 0.05f, 0.05f, a);  // bottom
+                drawRect(0,                       0,                        band,        windowHeight, 0.85f, 0.05f, 0.05f, a);  // left
+                drawRect(windowWidth - band,      0,                        band,        windowHeight, 0.85f, 0.05f, 0.05f, a);  // right
+            }
 
             // FPS readout (top-right, white)
             String fpsText = "FPS: " + fps;
             float fpsX = windowWidth - textWidth(fpsText, SCALE) - 10f;
             drawText(fpsText, fpsX, 10f, 1f, 1f, 1f, SCALE);
 
+            // Score, round info, and timer — Arena only (mapPreviewSlot == 1).
+            // Training Ground is a practice range with no opponent or rounds.
+            if (mapPreviewSlot == 1) {
+                boolean isAlphaTeam = (playerTeam == null || playerTeam == GameTeam.ALPHA);
+                float pR = isAlphaTeam ? 0.35f : 1.00f;
+                float pG = isAlphaTeam ? 0.60f : 0.30f;
+                float pB = isAlphaTeam ? 1.00f : 0.30f;
+                float oR = isAlphaTeam ? 1.00f : 0.35f;
+                float oG = isAlphaTeam ? 0.30f : 0.60f;
+                float oB = isAlphaTeam ? 0.30f : 1.00f;
+                int sc = 3;
+                String ps  = String.valueOf(playerScore);
+                String os2 = String.valueOf(opponentScore);
+                String sep = " - ";
+                float psW  = textWidth(ps,  sc);
+                float sepW = textWidth(sep, sc);
+                float osW  = textWidth(os2, sc);
+                float totalScoreW = psW + sepW + osW;
+                float scoreX = (windowWidth - totalScoreW) / 2f;
+                float scoreY = 10f;
+                drawText(ps,  scoreX,              scoreY, pR,   pG,   pB,   sc);
+                drawText(sep, scoreX + psW,        scoreY, 0.7f, 0.7f, 0.7f, sc);
+                drawText(os2, scoreX + psW + sepW, scoreY, oR,   oG,   oB,   sc);
+
+                // Round + series indicator below kill score
+                int    roundNum = playerRounds + opponentRounds + 1;
+                String rdLine   = "ROUND " + roundNum + "   " + playerRounds + "-" + opponentRounds + "  SERIES";
+                float  rdLineW  = textWidth(rdLine, 1);
+                drawText(rdLine, (windowWidth - rdLineW) / 2f, scoreY + CHAR_H * sc + 4f,
+                         0.45f, 0.45f, 0.50f, 1);
+
+                // Round timer — top-right, below FPS
+                if (roundTimer >= 0f) {
+                    int    tMins    = (int)(roundTimer / 60f);
+                    int    tSecs    = (int)(roundTimer % 60f);
+                    String timerStr = tMins + ":" + (tSecs < 10 ? "0" : "") + tSecs;
+                    float  timerX   = windowWidth - textWidth(timerStr, SCALE) - 10f;
+                    float  timerY   = 10f + CHAR_H * SCALE + 8f;
+                    float  tmR, tmG, tmB;
+                    if      (roundTimer > 60f) { tmR = 1f;    tmG = 1f;    tmB = 1f;    }
+                    else if (roundTimer > 30f) { tmR = 1f;    tmG = 0.85f; tmB = 0.15f; }
+                    else                       { tmR = 1f;    tmG = 0.20f; tmB = 0.20f; }
+                    drawText(timerStr, timerX, timerY, tmR, tmG, tmB, SCALE);
+                }
+            }
+
             // Network status (top-left) — only when networking is active.
             // Colour reflects state: green=connected, yellow=pending, red=lost.
+            float topLeftY = 10f;   // running y for stacked top-left indicators
             if (netStatus != null && !netStatus.isEmpty()) {
                 float nr = 1f, ng = 0.85f, nb = 0.2f;        // default: yellow (pending)
                 if (netStatus.contains("CONNECTED"))      { nr = 0.3f; ng = 1f;   nb = 0.3f; }
                 else if (netStatus.contains("LOST"))      { nr = 1f;   ng = 0.3f; nb = 0.3f; }
-                drawText(netStatus, 10f, 10f, nr, ng, nb, SCALE);
+                drawText(netStatus, 10f, topLeftY, nr, ng, nb, SCALE);
+                topLeftY += CHAR_H * SCALE + 6f;
             }
 
-            // Crosshair (center) — color reflects aim state
+            // Duel dummy HP (Phase 2.4) — shown top-left when the dummy is alive.
+            if (duelDummyHp >= 0f) {
+                float pct = duelDummyHp / 100f;
+                float[] dc = hpColor(pct);
+                drawText("OPPONENT HP: " + (int) duelDummyHp + "/100",
+                         10f, topLeftY, dc[0], dc[1], dc[2], SCALE);
+                topLeftY += CHAR_H * SCALE + 6f;
+            }
+
+            // Team indicator (Phase 2.7) — Arena only; Training Ground has no teams
+            if (mapPreviewSlot == 1) {
+                boolean isAlpha = (playerTeam == null || playerTeam == GameTeam.ALPHA);
+                float tR = isAlpha ? 0.35f : 1.00f;
+                float tG = isAlpha ? 0.60f : 0.30f;
+                float tB = isAlpha ? 1.00f : 0.30f;
+                drawText("TEAM: " + (isAlpha ? "ALPHA" : "BRAVO"),
+                         10f, topLeftY, tR, tG, tB, SCALE);
+            }
+
+            // Crosshair (center) — 4 arms with a center gap that blooms with recoil.
+            // Color reflects aim state: white=none, green=body, red=headshot.
             int cx = windowWidth  / 2;
             int cy = windowHeight / 2;
             float cr = 1f, cg = 1f, cb = 1f;
@@ -232,10 +346,35 @@ public class SimpleHUD {
                 if (aim.isHeadshot) { cr = 1f;   cg = 0.3f; cb = 0.3f; }
                 else                { cr = 0.3f; cg = 1f;   cb = 0.3f; }
             }
-            drawRect(cx - CROSSHAIR_ARM,        cy - CROSSHAIR_THICK / 2f,
-                     CROSSHAIR_ARM * 2f,         CROSSHAIR_THICK,           cr, cg, cb);
-            drawRect(cx - CROSSHAIR_THICK / 2f, cy - CROSSHAIR_ARM,
-                     CROSSHAIR_THICK,            CROSSHAIR_ARM * 2f,        cr, cg, cb);
+            float gap   = 4f + Math.max(0f, crosshairSpread);   // px from center to each arm
+            float arm   = CROSSHAIR_ARM;
+            float thick = CROSSHAIR_THICK;
+            // Left / Right arms
+            drawRect(cx - gap - arm,    cy - thick / 2f, arm, thick, cr, cg, cb);
+            drawRect(cx + gap,          cy - thick / 2f, arm, thick, cr, cg, cb);
+            // Top / Bottom arms
+            drawRect(cx - thick / 2f,   cy - gap - arm,  thick, arm, cr, cg, cb);
+            drawRect(cx - thick / 2f,   cy + gap,        thick, arm, cr, cg, cb);
+
+            // Hitmarker — 4 diagonal ticks that flash when a shot lands (red on kill)
+            if (hitMarkerAlpha > 0f) {
+                float hmR = 1.0f;
+                float hmG = hitMarkerKill ? 0.2f : 1.0f;
+                float hmB = hitMarkerKill ? 0.2f : 1.0f;
+                float a   = Math.min(1f, hitMarkerAlpha);
+                float d   = 9f;    // distance from center to inner end of each tick
+                float len = 6f;    // tick length
+                float tk  = 2f;    // tick thickness
+                // Draw as small squares stepped along the diagonal (axis-aligned approximation)
+                for (int i = 0; i < (int) len; i++) {
+                    float off = d + i;
+                    // top-left, top-right, bottom-left, bottom-right
+                    drawRect(cx - off - tk, cy - off - tk, tk, tk, hmR, hmG, hmB, a);
+                    drawRect(cx + off,      cy - off - tk, tk, tk, hmR, hmG, hmB, a);
+                    drawRect(cx - off - tk, cy + off,      tk, tk, hmR, hmG, hmB, a);
+                    drawRect(cx + off,      cy + off,      tk, tk, hmR, hmG, hmB, a);
+                }
+            }
 
             // Kill notification (centered, above crosshair, yellow)
             if (notification != null && !notification.isEmpty()) {
@@ -270,23 +409,28 @@ public class SimpleHUD {
         }
 
         // Flush all batched geometry to GPU in one draw call
-        if (floatCount == 0) return;
+        if (floatCount > 0) {
+            GL11.glDisable(GL11.GL_DEPTH_TEST);
+            GL11.glEnable(GL11.GL_BLEND);
+            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+            orthoShader.use();
 
-        GL11.glDisable(GL11.GL_DEPTH_TEST);
-        orthoShader.use();
+            GL30.glBindBuffer(GL30.GL_ARRAY_BUFFER, glyphVBO);
+            FloatBuffer fb = BufferUtils.createFloatBuffer(floatCount);
+            fb.put(verts, 0, floatCount);
+            fb.flip();
+            GL30.glBufferData(GL30.GL_ARRAY_BUFFER, fb, GL30.GL_DYNAMIC_DRAW);
 
-        GL30.glBindBuffer(GL30.GL_ARRAY_BUFFER, glyphVBO);
-        FloatBuffer fb = BufferUtils.createFloatBuffer(floatCount);
-        fb.put(verts, 0, floatCount);
-        fb.flip();
-        GL30.glBufferData(GL30.GL_ARRAY_BUFFER, fb, GL30.GL_DYNAMIC_DRAW);
+            GL30.glBindVertexArray(glyphVAO);
+            GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, floatCount / STRIDE_FLOATS);
+            GL30.glBindVertexArray(0);
 
-        GL30.glBindVertexArray(glyphVAO);
-        GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, floatCount / STRIDE_FLOATS);
-        GL30.glBindVertexArray(0);
+            orthoShader.unuse();
+            GL11.glDisable(GL11.GL_BLEND);
+            GL11.glEnable(GL11.GL_DEPTH_TEST);
+        }
 
-        orthoShader.unuse();
-        GL11.glEnable(GL11.GL_DEPTH_TEST);
+        return action;
     }
 
     // ===== Health Bar =====
@@ -317,6 +461,12 @@ public class SimpleHUD {
         // Colored fill (1px inset from border)
         float fillW = Math.max(0f, (w - 2f) * pct);
         float[] c   = hpColor(pct);
+        // Low-health pulse — fill brightness oscillates when below 30%
+        if (pct <= 0.3f && pct > 0f) {
+            float t     = (float)(0.5 + 0.5 * Math.sin(System.nanoTime() / 1.4e8));  // ~0..1
+            float boost = 0.55f + 0.45f * t;
+            c = new float[]{ c[0] * boost + (1f - boost), c[1] * boost, c[2] * boost };
+        }
         drawRect(barLeft + 1f, y + 1f, fillW, h - 2f, c[0], c[1], c[2]);
 
         // "85/100" text to the right of the bar (vertically centered)
@@ -410,6 +560,53 @@ public class SimpleHUD {
         }
     }
 
+    // ===== Button =====
+
+    /**
+     * Draw a bordered button with hover highlight.
+     *
+     * @param label       Text displayed inside the button (A-Z 0-9 only)
+     * @param actionId    String returned when the button is clicked
+     * @param x, y        Top-left corner of the button
+     * @param w, h        Button dimensions
+     * @param mouseX/Y    Current cursor position for hover detection
+     * @param clicked     True if the left mouse button was pressed this frame
+     * @param r, g, b     Accent colour (border + hover background tint)
+     * @return actionId if clicked, null otherwise
+     */
+    private String drawButton(String label, String actionId,
+                              float x, float y, float w, float h,
+                              float mouseX, float mouseY, boolean clicked,
+                              float r, float g, float b) {
+        boolean hovered = mouseX >= x && mouseX <= x + w
+                       && mouseY >= y && mouseY <= y + h;
+
+        // Background — dark base, tinted on hover
+        float bgR = hovered ? r * 0.20f : 0.07f;
+        float bgG = hovered ? g * 0.20f : 0.07f;
+        float bgB = hovered ? b * 0.20f : 0.10f;
+        drawRect(x, y, w, h, bgR, bgG, bgB);
+
+        // Border — bright accent on hover, dim otherwise
+        float bR = hovered ? r        : r * 0.40f;
+        float bG = hovered ? g        : g * 0.40f;
+        float bB = hovered ? b        : b * 0.40f;
+        float bw = hovered ? 2f : 1.5f;
+        drawRect(x,          y,          w,  bw, bR, bG, bB);   // top
+        drawRect(x,          y + h - bw, w,  bw, bR, bG, bB);   // bottom
+        drawRect(x,          y,          bw, h,  bR, bG, bB);   // left
+        drawRect(x + w - bw, y,          bw, h,  bR, bG, bB);   // right
+
+        // Label centered in button
+        float tw = textWidth(label, SCALE);
+        float tx = x + (w - tw) / 2f;
+        float ty = y + (h - CHAR_H * SCALE) / 2f;
+        float tr = hovered ? 1.0f : 0.85f;
+        drawText(label, tx, ty, tr, tr, tr, SCALE);
+
+        return (hovered && clicked) ? actionId : null;
+    }
+
     // ===== Menu Screen =====
 
     /**
@@ -421,11 +618,11 @@ public class SimpleHUD {
      *   Center    : "PRESS ENTER TO START" (scale=2, yellow)
      *   Bottom    : Controls reference (scale=1, dark gray)
      */
-    private void drawMenuScreen(int w, int h) {
-        // Dark blue-black full-screen overlay
+    private String drawMenuScreen(float mouseX, float mouseY, boolean clicked, int w, int h) {
+        // Dark blue-black overlay
         drawRect(0, 0, w, h, 0.02f, 0.02f, 0.06f);
 
-        // "RECALL" title — large, centered, upper-third of screen
+        // "RECALL" title
         int    ts     = 4;
         String title  = "RECALL";
         float  titleW = textWidth(title, ts);
@@ -433,140 +630,504 @@ public class SimpleHUD {
         float  titleY = h / 3f - CHAR_H * ts;
         drawText(title, titleX, titleY, 0.85f, 0.85f, 1.0f, ts);
 
-        // Subtitle below title
+        // Subtitle
         String sub  = "A 1V1 FPS GAME";
         float  subW = textWidth(sub, SCALE);
         float  subY = titleY + CHAR_H * ts + 14f;
         drawText(sub, (w - subW) / 2f, subY, 0.55f, 0.55f, 0.75f, SCALE);
 
-        // "PRESS ENTER TO START" — center screen, yellow
-        String prompt  = "PRESS ENTER TO START";
-        float  promptW = textWidth(prompt, SCALE);
-        float  promptY = h / 2f;
-        drawText(prompt, (w - promptW) / 2f, promptY, 1.0f, 1.0f, 0.30f, SCALE);
+        // Buttons — centered, stacked
+        float btnW = 220f, btnH = 32f, btnGap = 10f;
+        float btnX = (w - btnW) / 2f;
+        float btnY = h * 0.50f;
 
-        // "V - VIEW WEAPONS" — below start prompt, blue-white
-        String viewPrompt  = "V - VIEW WEAPONS";
-        float  viewPromptW = textWidth(viewPrompt, SCALE);
-        float  viewPromptY = promptY + CHAR_H * SCALE + 12f;
-        drawText(viewPrompt, (w - viewPromptW) / 2f, viewPromptY, 0.60f, 0.80f, 1.0f, SCALE);
+        String action = null;
+        String r;
 
-        // Controls reference — bottom strip, scale=1, dim gray
+        r = drawButton("PLAY", "START",
+                       btnX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.90f, 0.90f, 0.90f);
+        if (r != null) action = r;
+
+        r = drawButton("LOADOUT", "WEAPON_SELECT",
+                       btnX, btnY + (btnH + btnGap), btnW, btnH, mouseX, mouseY, clicked,
+                       0.60f, 0.80f, 1.00f);
+        if (r != null) action = r;
+
+        // Navigation hint just below the buttons
+        String navHint  = "ENTER - PLAY    V - LOADOUT";
+        float  navHintW = textWidth(navHint, 1);
+        drawText(navHint, (w - navHintW) / 2f, btnY + (btnH + btnGap) * 2f + 6f,
+                 0.40f, 0.40f, 0.45f, 1);
+
+        // Controls strip — bottom, dim
         String[] ctrlLines = {
-            "WASD - MOVE    SHIFT - SPRINT",
-            "MOUSE - LOOK   LMB - FIRE",
-            "1/2/3 - WEAPON SPACE - JUMP"
+            "WASD - MOVE    SHIFT - SPRINT    CTRL - CROUCH",
+            "MOUSE - LOOK   LMB - FIRE        SPACE - JUMP",
+            "1-5 - SWITCH WEAPON"
         };
         float ctrlY = h - ctrlLines.length * (CHAR_H + 6) - 22f;
         for (String line : ctrlLines) {
             float lineW = textWidth(line, 1);
-            drawText(line, (w - lineW) / 2f, ctrlY, 0.45f, 0.45f, 0.45f, 1);
+            drawText(line, (w - lineW) / 2f, ctrlY, 0.40f, 0.40f, 0.40f, 1);
             ctrlY += CHAR_H + 6f;
         }
+
+        return action;
     }
 
     // ===== Weapon Select Screen =====
 
     /**
-     * Weapon select screen — shows ONLY the 3D weapon model on a dark background.
-     * All visual focus is on the gun. Minimal floating text only: weapon name at
-     * top-center, tiny navigation hints at bottom. No background panels.
-     *
-     * @param weaponNames All three weapon names (PISTOL/RIFLE/SHOTGUN)
-     * @param slot        Currently selected slot (0/1/2)
-     * @param stats       Unused — no stat panels shown (kept for signature compat)
+     * Weapon select screen — shows the 3D weapon model with mouse-clickable navigation.
+     * Weapon name at top-center; PREV/NEXT/SELECT/BACK buttons at bottom.
      */
-    private void drawWeaponSelectScreen(String[] weaponNames, int slot,
-                                        String[] stats, int w, int h) {
-        // Weapon name — large, centered near top, clear of the weapon model
+    private String drawWeaponSelectScreen(String[] weaponNames, int slot,
+                                          float mouseX, float mouseY, boolean clicked,
+                                          int w, int h) {
+        // Weapon name — large, centered near top
         int    ns   = 3;
         String cur  = weaponNames[slot];
         float  curW = textWidth(cur, ns);
         drawText(cur, (w - curW) / 2f, 38f, 1.0f, 1.0f, 1.0f, ns);
 
-        // Navigation hints — small, dim, bottom two lines
-        String nav1 = "A / LEFT - PREV       D / RIGHT - NEXT";
-        String nav2 = "ENTER - START   ESC - BACK";
-        float  nav1W = textWidth(nav1, 1);
-        float  nav2W = textWidth(nav2, 1);
-        drawText(nav1, (w - nav1W) / 2f, h - 40f, 0.40f, 0.40f, 0.40f, 1);
-        drawText(nav2, (w - nav2W) / 2f, h - 26f, 0.40f, 0.40f, 0.40f, 1);
+        // Slot indicator (e.g. "2/5") — dim, centered below name
+        String ind  = (slot + 1) + "/" + weaponNames.length;
+        float  indW = textWidth(ind, 1);
+        drawText(ind, (w - indW) / 2f, 38f + CHAR_H * ns + 10f, 0.45f, 0.45f, 0.45f, 1);
+
+        // Buttons — row near bottom
+        float btnH   = 32f;
+        float btnW   = 150f;
+        float btnGap = 10f;
+        float totalW = btnW * 4 + btnGap * 3;
+        float startX = (w - totalW) / 2f;
+        float btnY   = h - btnH - 48f;
+
+        String action = null;
+        String r;
+
+        r = drawButton("PREV", "WEAPON_PREV",
+                       startX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.70f, 0.70f, 0.70f);
+        if (r != null) action = r;
+
+        r = drawButton("NEXT", "WEAPON_NEXT",
+                       startX + (btnW + btnGap), btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.70f, 0.70f, 0.70f);
+        if (r != null) action = r;
+
+        r = drawButton("SELECT", "WEAPON_CONFIRM",
+                       startX + (btnW + btnGap) * 2f, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.30f, 1.00f, 0.40f);
+        if (r != null) action = r;
+
+        r = drawButton("BACK", "MENU",
+                       startX + (btnW + btnGap) * 3f, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.90f, 0.40f, 0.40f);
+        if (r != null) action = r;
+
+        return action;
+    }
+
+    // ===== Map Select Screen =====
+
+    /**
+     * Map select screen — dark background with map name, description, availability,
+     * and mouse-clickable PREV/NEXT/SELECT/BACK buttons.
+     */
+    private String drawMapSelectScreen(int slot, String[] names, String[] descriptions,
+                                       boolean[] available,
+                                       float mouseX, float mouseY, boolean clicked,
+                                       int w, int h) {
+        // Dark overlay
+        drawRect(0, 0, w, h, 0.02f, 0.02f, 0.06f);
+
+        // "MAP SELECT" header
+        String header  = "MAP SELECT";
+        float  headerW = textWidth(header, SCALE);
+        drawText(header, (w - headerW) / 2f, 32f, 0.55f, 0.55f, 0.75f, SCALE);
+
+        // Map name — large, centered; white if available, dim if locked
+        int     ns    = 3;
+        String  name  = names[slot];
+        boolean avail = available[slot];
+        float   nameW = textWidth(name, ns);
+        float   nameR = avail ? 1.0f : 0.45f;
+        float   nameG = avail ? 1.0f : 0.45f;
+        float   nameB = avail ? 1.0f : 0.45f;
+        float   nameY = h / 3f - CHAR_H * ns;
+        drawText(name, (w - nameW) / 2f, nameY, nameR, nameG, nameB, ns);
+
+        // Description
+        String desc  = descriptions[slot];
+        float  descW = textWidth(desc, 1);
+        float  descY = nameY + CHAR_H * ns + 18f;
+        drawText(desc, (w - descW) / 2f, descY, 0.50f, 0.50f, 0.55f, 1);
+
+        // Status line
+        String status  = avail ? "STATUS: AVAILABLE" : "STATUS: COMING SOON";
+        float  statusW = textWidth(status, SCALE);
+        float  statusY = h / 2f;
+        float  sr      = avail ? 0.30f : 0.90f;
+        float  sg      = avail ? 1.00f : 0.35f;
+        float  sb      = avail ? 0.30f : 0.10f;
+        drawText(status, (w - statusW) / 2f, statusY, sr, sg, sb, SCALE);
+
+        // Slot indicator
+        String ind  = (slot + 1) + "/" + names.length;
+        float  indW = textWidth(ind, 1);
+        drawText(ind, (w - indW) / 2f, statusY + CHAR_H * SCALE + 12f, 0.40f, 0.40f, 0.40f, 1);
+
+        // Buttons
+        float btnH   = 32f;
+        float btnW   = 150f;
+        float btnGap = 10f;
+        float totalW = btnW * 4 + btnGap * 3;
+        float startX = (w - totalW) / 2f;
+        float btnY   = h - btnH - 48f;
+
+        String action = null;
+        String r;
+
+        r = drawButton("PREV", "MAP_PREV",
+                       startX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.70f, 0.70f, 0.70f);
+        if (r != null) action = r;
+
+        r = drawButton("NEXT", "MAP_NEXT",
+                       startX + (btnW + btnGap), btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.70f, 0.70f, 0.70f);
+        if (r != null) action = r;
+
+        // SELECT is dimmed and non-functional when map is locked
+        if (avail) {
+            r = drawButton("SELECT", "MAP_CONFIRM",
+                           startX + (btnW + btnGap) * 2f, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                           0.30f, 1.00f, 0.40f);
+            if (r != null) action = r;
+        } else {
+            // Draw a disabled SELECT button (no click response)
+            drawButton("SELECT", null,
+                       startX + (btnW + btnGap) * 2f, btnY, btnW, btnH, -1f, -1f, false,
+                       0.30f, 0.30f, 0.30f);
+        }
+
+        r = drawButton("BACK", "MENU",
+                       startX + (btnW + btnGap) * 3f, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.90f, 0.40f, 0.40f);
+        if (r != null) action = r;
+
+        return action;
+    }
+
+    // ===== Team Select Screen =====
+
+    /**
+     * Full-screen team selection — two large colored cards (ALPHA/BRAVO) side by side.
+     * Clicking a card sets the team and starts the match immediately.
+     */
+    private String drawTeamSelectScreen(float mouseX, float mouseY, boolean clicked, int w, int h) {
+        drawRect(0, 0, w, h, 0.02f, 0.02f, 0.06f);
+
+        // Header
+        String header  = "SELECT YOUR TEAM";
+        float  headerW = textWidth(header, SCALE);
+        drawText(header, (w - headerW) / 2f, 38f, 0.55f, 0.55f, 0.75f, SCALE);
+
+        // Two large team cards side by side
+        float cardW = 240f, cardH = 140f, cardGap = 40f;
+        float startX = (w - (cardW * 2 + cardGap)) / 2f;
+        float cardY  = h / 2f - cardH / 2f - 20f;
+
+        String action = null;
+        String r;
+
+        // ALPHA card — blue
+        r = drawButton("ALPHA", "TEAM_ALPHA",
+                       startX, cardY, cardW, cardH,
+                       mouseX, mouseY, clicked,
+                       0.35f, 0.60f, 1.00f);
+        if (r != null) action = r;
+        // Subtext below the card label
+        String aSub  = "BLUE TEAM";
+        float  aSubW = textWidth(aSub, 1);
+        drawText(aSub, startX + (cardW - aSubW) / 2f, cardY + cardH * 0.70f,
+                 0.35f, 0.60f, 1.00f, 1);
+
+        // BRAVO card — red
+        float cardX2 = startX + cardW + cardGap;
+        r = drawButton("BRAVO", "TEAM_BRAVO",
+                       cardX2, cardY, cardW, cardH,
+                       mouseX, mouseY, clicked,
+                       1.00f, 0.30f, 0.30f);
+        if (r != null) action = r;
+        String bSub  = "RED TEAM";
+        float  bSubW = textWidth(bSub, 1);
+        drawText(bSub, cardX2 + (cardW - bSubW) / 2f, cardY + cardH * 0.70f,
+                 1.00f, 0.30f, 0.30f, 1);
+
+        // Back button
+        float backW = 150f, backH = 32f;
+        float backX = (w - backW) / 2f;
+        float backY = cardY + cardH + 24f;
+        r = drawButton("BACK", "TEAM_BACK",
+                       backX, backY, backW, backH,
+                       mouseX, mouseY, clicked,
+                       0.70f, 0.70f, 0.70f);
+        if (r != null) action = r;
+
+        // Keyboard hint
+        String hint  = "1 - ALPHA   2 - BRAVO   ESC - BACK";
+        float  hintW = textWidth(hint, 1);
+        drawText(hint, (w - hintW) / 2f, h - 30f, 0.35f, 0.35f, 0.35f, 1);
+
+        return action;
+    }
+
+    // ===== Match End Screen =====
+
+    /**
+     * Full-screen match result overlay — YOU WIN (green) or YOU LOSE (red).
+     * Shows final score and offers PLAY AGAIN / MAIN MENU.
+     */
+    private String drawMatchEndScreen(boolean playerWon, int playerScore, int opponentScore,
+                                      int winScore,
+                                      int playerRounds, int opponentRounds,
+                                      float mouseX, float mouseY, boolean clicked,
+                                      int w, int h) {
+        // Overlay tint — dark green if win, dark red if loss
+        if (playerWon) drawRect(0, 0, w, h, 0.02f, 0.12f, 0.02f);
+        else           drawRect(0, 0, w, h, 0.12f, 0.02f, 0.02f);
+
+        // Main result text
+        int    ts     = 4;
+        String result = playerWon ? "YOU WIN" : "YOU LOSE";
+        float  rR     = playerWon ? 0.30f : 1.00f;
+        float  rG     = playerWon ? 1.00f : 0.20f;
+        float  rB     = playerWon ? 0.30f : 0.20f;
+        float  resW   = textWidth(result, ts);
+        float  resY   = h / 2f - CHAR_H * ts - 50f;
+        drawText(result, (w - resW) / 2f, resY, rR, rG, rB, ts);
+
+        // Series score
+        String score  = "SERIES  " + playerRounds + " - " + opponentRounds + "  ROUNDS";
+        float  scoreW = textWidth(score, SCALE);
+        float  scoreY = resY + CHAR_H * ts + 20f;
+        drawText(score, (w - scoreW) / 2f, scoreY, 0.85f, 0.85f, 0.85f, SCALE);
+
+        // Round kill context
+        String sub  = "LAST ROUND  " + playerScore + " - " + opponentScore + "  KILLS";
+        float  subW = textWidth(sub, 1);
+        drawText(sub, (w - subW) / 2f, scoreY + CHAR_H * SCALE + 10f,
+                 0.45f, 0.45f, 0.45f, 1);
+
+        // Buttons
+        float btnW = 200f, btnH = 32f, btnGap = 12f;
+        float totalW = btnW * 2 + btnGap;
+        float btnY   = h / 2f + 30f;
+        float leftX  = (w - totalW) / 2f;
+        float rightX = leftX + btnW + btnGap;
+
+        String action = null;
+        String r;
+
+        r = drawButton("PLAY AGAIN", "PLAY_AGAIN",
+                       leftX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.30f, 1.00f, 0.40f);
+        if (r != null) action = r;
+
+        r = drawButton("MAIN MENU", "MENU",
+                       rightX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.70f, 0.70f, 0.70f);
+        if (r != null) action = r;
+
+        // Keyboard hint
+        String hint  = "ENTER - PLAY AGAIN   ESC - MENU";
+        float  hintW = textWidth(hint, 1);
+        drawText(hint, (w - hintW) / 2f, h - 30f, 0.35f, 0.35f, 0.35f, 1);
+
+        return action;
+    }
+
+    // ===== Round End Screen =====
+
+    /**
+     * Full-screen round result overlay — ROUND WIN (blue) or ROUND LOST (red).
+     * Shows kill score this round, series progress (P-O rounds), and NEXT ROUND / MAIN MENU.
+     */
+    private String drawRoundEndScreen(boolean playerWonRound,
+                                      int playerRounds, int opponentRounds, int roundsToWin,
+                                      int playerScore, int opponentScore,
+                                      float mouseX, float mouseY, boolean clicked, int w, int h) {
+        // Overlay tint
+        if (playerWonRound) drawRect(0, 0, w, h, 0.02f, 0.07f, 0.18f);
+        else                drawRect(0, 0, w, h, 0.14f, 0.02f, 0.07f);
+
+        // Round number (rounds played = playerRounds + opponentRounds after increment)
+        int    roundNum  = playerRounds + opponentRounds;
+        String rdLabel   = "ROUND " + roundNum + " COMPLETE";
+        float  rdLabelW  = textWidth(rdLabel, SCALE);
+        float  rdLabelY  = h / 2f - CHAR_H * 4 - 90f;
+        drawText(rdLabel, (w - rdLabelW) / 2f, rdLabelY, 0.55f, 0.55f, 0.75f, SCALE);
+
+        // ROUND WIN / ROUND LOST
+        int    ts     = 4;
+        String result = playerWonRound ? "ROUND WIN" : "ROUND LOST";
+        float  rR     = playerWonRound ? 0.30f : 1.00f;
+        float  rG     = playerWonRound ? 1.00f : 0.25f;
+        float  rB     = playerWonRound ? 0.70f : 0.25f;
+        float  resW   = textWidth(result, ts);
+        float  resY   = rdLabelY + CHAR_H * SCALE + 18f;
+        drawText(result, (w - resW) / 2f, resY, rR, rG, rB, ts);
+
+        // Kill score this round
+        String killLine = "KILLS  " + playerScore + " - " + opponentScore;
+        float  killW    = textWidth(killLine, SCALE);
+        float  killY    = resY + CHAR_H * ts + 18f;
+        drawText(killLine, (w - killW) / 2f, killY, 0.75f, 0.75f, 0.75f, SCALE);
+
+        // "SERIES" label
+        String serLabel = "SERIES";
+        float  serLW    = textWidth(serLabel, 1);
+        float  serLY    = killY + CHAR_H * SCALE + 22f;
+        drawText(serLabel, (w - serLW) / 2f, serLY, 0.45f, 0.45f, 0.55f, 1);
+
+        // Series score — player in blue, opponent in red
+        int    ss    = 3;
+        String pRd   = String.valueOf(playerRounds);
+        String oRd   = String.valueOf(opponentRounds);
+        String sSep  = "  -  ";
+        float  pRdW  = textWidth(pRd,  ss);
+        float  sSpW  = textWidth(sSep, ss);
+        float  oRdW  = textWidth(oRd,  ss);
+        float  totW  = pRdW + sSpW + oRdW;
+        float  srdX  = (w - totW) / 2f;
+        float  srdY  = serLY + CHAR_H + 8f;
+        drawText(pRd,  srdX,              srdY, 0.35f, 0.65f, 1.00f, ss);
+        drawText(sSep, srdX + pRdW,       srdY, 0.60f, 0.60f, 0.60f, ss);
+        drawText(oRd,  srdX + pRdW + sSpW, srdY, 1.00f, 0.30f, 0.30f, ss);
+
+        // "FIRST TO X ROUNDS WINS"
+        String ftR  = "FIRST TO " + roundsToWin + " ROUNDS WINS";
+        float  ftRW = textWidth(ftR, 1);
+        drawText(ftR, (w - ftRW) / 2f, srdY + CHAR_H * ss + 10f,
+                 0.38f, 0.38f, 0.42f, 1);
+
+        // Buttons
+        float btnW   = 200f, btnH = 32f, btnGap = 12f;
+        float totalB = btnW * 2 + btnGap;
+        float btnY   = srdY + CHAR_H * ss + 44f;
+        float leftX  = (w - totalB) / 2f;
+        float rightX = leftX + btnW + btnGap;
+
+        String action = null;
+        String r;
+
+        r = drawButton("NEXT ROUND", "NEXT_ROUND",
+                       leftX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.30f, 1.00f, 0.40f);
+        if (r != null) action = r;
+
+        r = drawButton("MAIN MENU", "MENU",
+                       rightX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.70f, 0.70f, 0.70f);
+        if (r != null) action = r;
+
+        String hint  = "ENTER - NEXT ROUND   ESC - MENU";
+        float  hintW = textWidth(hint, 1);
+        drawText(hint, (w - hintW) / 2f, h - 30f, 0.35f, 0.35f, 0.35f, 1);
+
+        return action;
     }
 
     // ===== Death Screen =====
 
     /**
-     * Full-screen dark-red death overlay.
-     *
-     * Layout:
-     *   Center        : "YOU DIED" (scale=4, bright red)
-     *   Below center  : "PRESS ENTER TO RESPAWN" (scale=2, white)
+     * Full-screen dark-red death overlay with a RESPAWN button.
      */
-    private void drawDeathScreen(int w, int h) {
-        // Dark red full-screen overlay
-        drawRect(0, 0, w, h, 0.25f, 0.0f, 0.0f);
+    private String drawDeathScreen(float mouseX, float mouseY, boolean clicked,
+                                   int playerScore, int opponentScore,
+                                   int w, int h) {
+        // Translucent red so the frozen scene shows through behind the overlay
+        drawRect(0, 0, w, h, 0.30f, 0.0f, 0.0f, 0.55f);
 
-        // "YOU DIED" — centered, above middle
+        // "YOU DIED"
         int    ds    = 4;
         String died  = "YOU DIED";
         float  diedW = textWidth(died, ds);
         float  diedX = (w - diedW) / 2f;
-        float  diedY = h / 2f - CHAR_H * ds - 10f;
+        float  diedY = h / 2f - CHAR_H * ds - 40f;
         drawText(died, diedX, diedY, 1.0f, 0.15f, 0.15f, ds);
 
-        // "PRESS ENTER TO RESPAWN" — centered, below "YOU DIED"
-        String respawn  = "PRESS ENTER TO RESPAWN";
-        float  respawnW = textWidth(respawn, SCALE);
-        float  respawnY = diedY + CHAR_H * ds + 20f;
-        drawText(respawn, (w - respawnW) / 2f, respawnY, 1.0f, 1.0f, 1.0f, SCALE);
+        // Current score below title
+        String score  = "SCORE  " + playerScore + " - " + opponentScore;
+        float  scoreW = textWidth(score, SCALE);
+        drawText(score, (w - scoreW) / 2f, diedY + CHAR_H * ds + 16f,
+                 0.80f, 0.80f, 0.80f, SCALE);
+
+        // RESPAWN button
+        float btnW = 200f, btnH = 32f;
+        float btnX = (w - btnW) / 2f;
+        float btnY = diedY + CHAR_H * ds + 16f + CHAR_H * SCALE + 20f;
+        String action = drawButton("RESPAWN", "RESPAWN",
+                          btnX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                          1.0f, 0.35f, 0.35f);
+
+        // Keyboard hint
+        String hint  = "ENTER - RESPAWN";
+        float  hintW = textWidth(hint, 1);
+        drawText(hint, (w - hintW) / 2f, btnY + btnH + 16f, 0.40f, 0.40f, 0.40f, 1);
+
+        return action;
     }
 
     // ===== Pause Menu Screen =====
 
     /**
-     * Full-screen semi-transparent dark overlay with pause menu options.
-     *
-     * Layout:
-     *   Center    : "PAUSED" (scale=4, white)
-     *   Below     : Three menu options with key hints
-     *   Bottom    : Footer hint about ESC to pause
+     * Semi-transparent dark overlay with pause menu buttons.
      */
-    private void drawPauseMenu(int w, int h) {
-        // Dark semi-opaque overlay
-        drawRect(0, 0, w, h, 0.1f, 0.1f, 0.15f);
+    private String drawPauseMenu(float mouseX, float mouseY, boolean clicked, int w, int h) {
+        // Translucent dim so the frozen world shows through behind the menu
+        drawRect(0, 0, w, h, 0.05f, 0.05f, 0.09f, 0.78f);
 
-        // "PAUSED" title — large, centered
-        int    ps    = 4;
-        String pause = "PAUSED";
+        // "PAUSED" title
+        int    ps     = 4;
+        String pause  = "PAUSED";
         float  pauseW = textWidth(pause, ps);
         float  pauseX = (w - pauseW) / 2f;
         float  pauseY = h / 3f - CHAR_H * ps;
         drawText(pause, pauseX, pauseY, 1.0f, 1.0f, 1.0f, ps);
 
-        // Menu options — centered, scale=2
-        float optY = h / 2f;
+        // Buttons — centered, stacked
+        float btnW = 220f, btnH = 32f, btnGap = 10f;
+        float btnX = (w - btnW) / 2f;
+        float btnY = h / 2f;
 
-        // "ESC / R - RESUME GAME"
-        String opt1 = "ESC / R - RESUME GAME";
-        float  opt1W = textWidth(opt1, SCALE);
-        drawText(opt1, (w - opt1W) / 2f, optY, 0.5f, 1.0f, 0.5f, SCALE);
-        optY += CHAR_H * SCALE + 20f;
+        String action = null;
+        String r;
 
-        // "L - LEAVE GAME"
-        String opt2 = "L - LEAVE GAME";
-        float  opt2W = textWidth(opt2, SCALE);
-        drawText(opt2, (w - opt2W) / 2f, optY, 1.0f, 1.0f, 0.5f, SCALE);
-        optY += CHAR_H * SCALE + 20f;
+        r = drawButton("RESUME GAME", "RESUME",
+                       btnX, btnY, btnW, btnH, mouseX, mouseY, clicked,
+                       0.40f, 1.00f, 0.40f);
+        if (r != null) action = r;
 
-        // "E - EXIT TO DESKTOP"
-        String opt3 = "E - EXIT TO DESKTOP";
-        float  opt3W = textWidth(opt3, SCALE);
-        drawText(opt3, (w - opt3W) / 2f, optY, 1.0f, 0.5f, 0.5f, SCALE);
+        r = drawButton("MAIN MENU", "LEAVE",
+                       btnX, btnY + (btnH + btnGap), btnW, btnH, mouseX, mouseY, clicked,
+                       1.00f, 1.00f, 0.40f);
+        if (r != null) action = r;
 
-        // Footer hint (all uppercase — font only supports A-Z)
-        String hint = "PRESS ESC TO PAUSE";
+        r = drawButton("EXIT TO DESKTOP", "EXIT",
+                       btnX, btnY + (btnH + btnGap) * 2f, btnW, btnH, mouseX, mouseY, clicked,
+                       1.00f, 0.40f, 0.40f);
+        if (r != null) action = r;
+
+        // Footer hint
+        String hint  = "ESC / R - RESUME    L - MAIN MENU    E - EXIT";
         float  hintW = textWidth(hint, 1);
-        drawText(hint, (w - hintW) / 2f, h - 40f, 0.4f, 0.4f, 0.4f, 1);
+        drawText(hint, (w - hintW) / 2f, h - 40f, 0.35f, 0.35f, 0.35f, 1);
+
+        return action;
     }
 
     // ===== Text & Layout Utilities =====
@@ -603,17 +1164,23 @@ public class SimpleHUD {
         }
     }
 
-    /** Draw a solid-color axis-aligned rectangle as two triangles. */
+    /** Draw a solid (opaque) axis-aligned rectangle as two triangles. */
     private void drawRect(float x, float y, float w, float h, float r, float g, float b) {
+        drawRect(x, y, w, h, r, g, b, 1f);
+    }
+
+    /** Draw an axis-aligned rectangle with explicit alpha (requires GL blending). */
+    private void drawRect(float x, float y, float w, float h,
+                          float r, float g, float b, float a) {
         ensureCapacity(QUAD_FLOATS);
         // Tri 1: TL, BL, TR
-        put(x,     y,     r, g, b);
-        put(x,     y + h, r, g, b);
-        put(x + w, y,     r, g, b);
+        put(x,     y,     r, g, b, a);
+        put(x,     y + h, r, g, b, a);
+        put(x + w, y,     r, g, b, a);
         // Tri 2: BL, BR, TR
-        put(x,     y + h, r, g, b);
-        put(x + w, y + h, r, g, b);
-        put(x + w, y,     r, g, b);
+        put(x,     y + h, r, g, b, a);
+        put(x + w, y + h, r, g, b, a);
+        put(x + w, y,     r, g, b, a);
     }
 
     // ===== Vertex Accumulator Helpers =====
@@ -628,12 +1195,13 @@ public class SimpleHUD {
         verts = bigger;
     }
 
-    private void put(float x, float y, float r, float g, float b) {
+    private void put(float x, float y, float r, float g, float b, float a) {
         verts[floatCount++] = x;
         verts[floatCount++] = y;
         verts[floatCount++] = r;
         verts[floatCount++] = g;
         verts[floatCount++] = b;
+        verts[floatCount++] = a;
     }
 
     // ===== Cleanup =====
